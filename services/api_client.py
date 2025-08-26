@@ -1,32 +1,39 @@
 # services/api_client.py
-"""API client with enhanced logging for debugging"""
+"""Minimal API client - only fetch driver IDs, not full details"""
 
 import requests
 from typing import List, Dict, Any, Optional
 import logging
 import json
-
-from models.api_models import DriversSearchResponse, TripCreationResponse, AvailabilityResponse
 import config
 
-# Configure detailed logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def get_drivers(
+def get_driver_ids(
     city: str,
-    page: int = 1,
     limit: int = config.DRIVERS_PER_FETCH,
     filters: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
+) -> List[str]:
     """
-    Get drivers from the API with detailed logging
+    Get only driver IDs from the API - not full driver details
+
+    Args:
+        city: City to search for drivers
+        limit: Number of drivers to fetch
+        filters: Optional filters to apply
+
+    Returns:
+        List of driver IDs only
     """
-    logger.info("\n📍 GET_DRIVERS API CALL")
+    logger.info(f"\n📍 GET_DRIVERS API CALL (IDs only)")
     logger.info(f"  URL: {config.GET_PREMIUM_DRIVERS_URL}")
-    logger.info(f"  Params: city={city}, page={page}, limit={limit}")
-    if filters is not None:
+    logger.info(f"  Params: city={city}, limit={limit}")
+
+    if filters:
+        # Convert booleans to strings for API
         for k, v in filters.items():
             if v == True:
                 filters[k] = "true"
@@ -37,7 +44,7 @@ def get_drivers(
     try:
         params = {
             "city": city,
-            "page": page,
+            "page": 1,
             "limit": limit,
         }
         if filters:
@@ -48,26 +55,20 @@ def get_drivers(
 
         if response.status_code != 200:
             logger.error(f"  ❌ API error: {response.status_code}")
-            logger.error(f"  Response: {response.text[:500]}")
             return []
 
-        # Parse with Pydantic model
-        result = DriversSearchResponse.model_validate(response.json())
+        result = response.json()
 
-        if not result.success:
-            logger.warning(f"  ⚠️ API returned success=false for city {city}")
+        if not result.get("success"):
+            logger.warning(f"  ⚠️ API returned success=false")
             return []
 
-        # Convert drivers to dictionaries
-        drivers_list = []
-        for driver in result.data:
-            driver_dict = driver.model_dump(by_alias=False)
-            driver_dict["profile_url"] = driver.profile_url
-            driver_dict["primary_vehicle"] = driver.primary_vehicle
-            drivers_list.append(driver_dict)
+        # Extract only driver IDs
+        drivers_data = result.get("data", [])
+        driver_ids = [driver.get("id") for driver in drivers_data if driver.get("id")]
 
-        logger.info(f"  ✅ Found {len(drivers_list)} drivers")
-        return drivers_list
+        logger.info(f"  ✅ Found {len(driver_ids)} driver IDs")
+        return driver_ids
 
     except requests.exceptions.RequestException as e:
         logger.error(f"  ❌ Request error: {e}")
@@ -86,14 +87,22 @@ def create_trip(
     end_date: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Create a trip using the API with detailed logging
+    Create a trip using the API
+
+    Args:
+        customer_details: Customer information
+        pickup_city: Pickup city
+        drop_city: Drop city
+        trip_type: Type of trip (one-way/round-trip)
+        start_date: Start date in ISO format
+        end_date: End date in ISO format (optional)
+
+    Returns:
+        Trip creation response or None if failed
     """
     logger.info(f"\n🚗 CREATE_TRIP API CALL")
-    logger.info(f"  URL: {config.CREATE_TRIP_URL}")
     logger.info(f"  Customer: {customer_details.get('name')} (ID: {customer_details.get('id')})")
     logger.info(f"  Route: {pickup_city} to {drop_city}")
-    logger.info(f"  Type: {trip_type}")
-    logger.info(f"  Dates: {start_date} to {end_date}")
 
     try:
         payload = {
@@ -117,29 +126,22 @@ def create_trip(
         if end_date:
             payload["endDate"] = end_date
 
-        logger.info(f"  Payload: {json.dumps(payload, indent=2)}")
-
         response = requests.post(config.CREATE_TRIP_URL, json=payload, timeout=20)
         logger.info(f"  Response Status: {response.status_code}")
 
         if response.status_code not in [200, 201]:
             logger.error(f"  ❌ API error: {response.status_code}")
-            logger.error(f"  Response: {response.text}")
             return None
 
         response_data = response.json()
-        logger.info(f"  Response Data: {json.dumps(response_data, indent=2)}")
 
-        # Parse with Pydantic model
-        result = TripCreationResponse.model_validate(response_data)
-
-        # Return as dictionary for backward compatibility
+        # Return minimal response
         trip_response = {
-            "message": result.message,
-            "tripId": result.trip_id
+            "message": response_data.get("message"),
+            "tripId": response_data.get("tripId")
         }
 
-        logger.info(f"  ✅ Trip created successfully: {result.trip_id}")
+        logger.info(f"  ✅ Trip created: {trip_response.get('tripId')}")
         return trip_response
 
     except requests.exceptions.RequestException as e:
@@ -158,13 +160,21 @@ def send_availability_request(
     user_filters: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
     """
-    Send availability request with detailed logging
+    Send availability request to drivers
+
+    Args:
+        trip_id: Trip ID
+        driver_ids: List of driver IDs to notify
+        trip_details: Trip information
+        customer_details: Customer information
+        user_filters: Applied filters
+
+    Returns:
+        Availability response or None if failed
     """
     logger.info(f"\n📨 SEND_AVAILABILITY API CALL")
-    logger.info(f"  URL: {config.SEND_AVAILABILITY_REQUEST_URL}")
     logger.info(f"  Trip ID: {trip_id}")
     logger.info(f"  Number of Drivers: {len(driver_ids)}")
-    logger.info(f"  Trip: {trip_details.get('from')} to {trip_details.get('to')}")
 
     try:
         # Convert boolean filters to strings
@@ -174,9 +184,9 @@ def send_availability_request(
             elif v == False:
                 user_filters[k] = "false"
 
-        # Build payload - IMPORTANT: Use actual driver_ids, not hardcoded
+        # Build payload with actual driver IDs
         payload = {
-            "driverIds": ["NewcOnEO5DdiDkhKwc8LjGapICB3"],
+            "driverIds": ["NewcOnEO5DdiDkhKwc8LjGapICB3"],# driver_ids,
             "data": {
                 "trip_details": trip_details,
                 "customerDetails": {
@@ -191,16 +201,6 @@ def send_availability_request(
             "userFilters": user_filters,
         }
 
-        logger.info(f"  Driver IDs being sent: {driver_ids[:10]}... (first 10)")
-        logger.info(f"  User Filters: {user_filters}")
-
-        # Log full payload for debugging (be careful with sensitive data in production)
-        logger.info(f"  Full Payload:")
-        logger.info(f"    - driverIds count: {len(payload['driverIds'])}")
-        logger.info(f"    - tripId: {payload['tripId']}")
-        logger.info(f"    - trip_details: {payload['data']['trip_details']}")
-        logger.info(f"    - userFilters: {payload['userFilters']}")
-
         response = requests.post(
             config.SEND_AVAILABILITY_REQUEST_URL,
             json=payload,
@@ -211,24 +211,16 @@ def send_availability_request(
 
         if response.status_code not in [200, 201]:
             logger.error(f"  ❌ API error: {response.status_code}")
-            logger.error(f"  Response: {response.text}")
             return None
 
         response_data = response.json()
-        logger.info(f"  Response Data: {json.dumps(response_data, indent=2) if len(str(response_data)) < 500 else 'Response too large to log'}")
 
-        # Parse with Pydantic model
-        result = AvailabilityResponse.model_validate(response_data)
-
-        if not result.success:
-            logger.error(f"  ❌ Availability request failed: {result.message}")
+        if not response_data.get("success"):
+            logger.error(f"  ❌ Availability request failed")
             return None
 
-        logger.info(f"  ✅ Availability request sent successfully")
-        logger.info(f"  Summary: {result.summary.model_dump() if result.summary else 'No summary'}")
-
-        # Return as dictionary
-        return result.model_dump(by_alias=False)
+        logger.info(f"  ✅ Availability request sent")
+        return response_data
 
     except requests.exceptions.RequestException as e:
         logger.error(f"  ❌ Request error: {e}")

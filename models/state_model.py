@@ -1,5 +1,5 @@
 # models/state_model.py
-"""Simplified state management schema for the streamlined cab booking flow"""
+"""Minimal state management schema for cab booking flow"""
 
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -7,7 +7,7 @@ from langchain_core.messages import BaseMessage
 
 
 class ConversationState(BaseModel):
-    """Simplified state for user's conversation - removed driver tracking"""
+    """Minimal state for user's conversation - only essentials"""
     model_config = {"arbitrary_types_allowed": True}
 
     # Chat history
@@ -34,9 +34,9 @@ class ConversationState(BaseModel):
     last_bot_response: Optional[str] = None
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
 
-    # Booking status
-    booking_status: Optional[str] = None  # "gathering_info", "collecting_preferences", "processing", "completed"
-    drivers_notified: int = 0
+    # Booking status - only keep driver IDs
+    booking_status: Optional[str] = None
+    driver_ids_notified: List[str] = Field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for graph state"""
@@ -56,7 +56,7 @@ class ConversationState(BaseModel):
             "last_bot_response": self.last_bot_response,
             "tool_calls": self.tool_calls,
             "booking_status": self.booking_status,
-            "drivers_notified": self.drivers_notified,
+            "driver_ids_notified": self.driver_ids_notified,
         }
 
     @classmethod
@@ -77,4 +77,4 @@ class ConversationState(BaseModel):
         self.last_bot_response = None
         self.tool_calls = []
         self.booking_status = None
-        self.drivers_notified = 0
+        self.driver_ids_notified = []

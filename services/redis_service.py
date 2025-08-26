@@ -1,10 +1,10 @@
 # services/redis_service.py
-"""Async Redis service for session and state management - FIXED for new flow"""
+"""Minimal Redis service for session management"""
 
 import redis.asyncio as redis
 import pickle
 import logging
-from typing import Optional, Dict, Any, List, cast
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import os
 from contextlib import asynccontextmanager
@@ -19,7 +19,6 @@ class RedisConfig:
     """Redis configuration handler"""
 
     def __init__(self):
-        # Environment-based configuration
         self.redis_host = os.environ.get("REDIS_HOST", "localhost")
         self.redis_port = int(os.environ.get("REDIS_PORT", 6379))
         self.redis_password = os.environ.get("REDIS_PASSWORD", None)
@@ -27,7 +26,7 @@ class RedisConfig:
         self.redis_ssl = os.environ.get("REDIS_SSL", "false").lower() == "true"
 
         # Session settings
-        self.session_ttl = int(os.environ.get("SESSION_TTL_HOURS", 1)) * 3600  # Convert to seconds
+        self.session_ttl = int(os.environ.get("SESSION_TTL_HOURS", 1)) * 3600
         self.max_pool_connections = int(os.environ.get("REDIS_MAX_CONNECTIONS", 50))
 
     def get_connection_params(self) -> Dict[str, Any]:
@@ -36,7 +35,7 @@ class RedisConfig:
             "host": self.redis_host,
             "port": self.redis_port,
             "db": self.redis_db,
-            "decode_responses": False,  # We'll handle encoding/decoding ourselves
+            "decode_responses": False,
             "socket_connect_timeout": 5,
             "socket_timeout": 5,
             "retry_on_timeout": True,
@@ -64,11 +63,9 @@ class MessageSerializer:
             "content": message.content,
         }
 
-        # Add additional fields based on message type
         if isinstance(message, AIMessage):
             if hasattr(message, 'tool_calls'):
                 msg_dict["tool_calls"] = message.tool_calls
-
         elif isinstance(message, ToolMessage):
             if hasattr(message, 'tool_call_id'):
                 msg_dict["tool_call_id"] = message.tool_call_id
@@ -93,20 +90,18 @@ class MessageSerializer:
         elif msg_type == "SystemMessage":
             return SystemMessage(content=content)
         elif msg_type == "ToolMessage":
-            tool_msg = ToolMessage(
+            return ToolMessage(
                 content=content,
                 tool_call_id=msg_dict.get("tool_call_id", ""),
                 name=msg_dict.get("name", "")
             )
-            return tool_msg
         else:
-            # Fallback to HumanMessage
-            logger.warning(f"Unknown message type: {msg_type}, using HumanMessage")
+            logger.warning(f"Unknown message type: {msg_type}")
             return HumanMessage(content=content)
 
 
 class AsyncRedisSessionManager:
-    """Async Redis session manager for the cab booking bot"""
+    """Minimal Redis session manager"""
 
     def __init__(self):
         self.config = RedisConfig()
@@ -116,7 +111,7 @@ class AsyncRedisSessionManager:
         self._initialized = False
 
     async def initialize(self):
-        """Initialize Redis connection pool - call this on startup"""
+        """Initialize Redis connection pool"""
         if self._initialized:
             return
 
@@ -129,17 +124,17 @@ class AsyncRedisSessionManager:
 
             # Test connection
             await self.redis_client.ping()
-            logger.info(f"✅ Redis connected successfully at {self.config.redis_host}:{self.config.redis_port}")
+            logger.info(f"✅ Redis connected at {self.config.redis_host}:{self.config.redis_port}")
             self._initialized = True
 
         except redis.ConnectionError as e:
             logger.error(f"❌ Failed to connect to Redis: {e}")
-            logger.warning("⚠️ Falling back to in-memory storage")
+            logger.warning("⚠️ Using in-memory storage")
             self.redis_client = None
             self._initialized = True
 
     async def close(self):
-        """Close Redis connections - call this on shutdown"""
+        """Close Redis connections"""
         if self.redis_client:
             await self.redis_client.close()
             if self.pool:
@@ -148,7 +143,7 @@ class AsyncRedisSessionManager:
 
     @asynccontextmanager
     async def get_redis(self):
-        """Async context manager for Redis operations with fallback"""
+        """Context manager for Redis operations"""
         if not self._initialized:
             await self.initialize()
 
@@ -165,13 +160,8 @@ class AsyncRedisSessionManager:
         """Generate Redis key for user session"""
         return f"cab_bot:session:{user_id}"
 
-    def _get_message_cache_key(self, user_id: str) -> str:
-        """Generate Redis key for processed messages cache"""
-        return f"cab_bot:messages:{user_id}"
-
     def _serialize_state(self, state: ConversationState) -> bytes:
-        """Serialize ConversationState to bytes for Redis storage - FIXED for new flow"""
-        # Convert state to dict - ONLY include fields that exist in new state model
+        """Serialize ConversationState to bytes - minimal version"""
         state_dict = {
             "chat_history": [
                 self.message_serializer.serialize_message(msg)
@@ -191,15 +181,14 @@ class AsyncRedisSessionManager:
             "last_bot_response": state.last_bot_response,
             "tool_calls": state.tool_calls,
             "booking_status": state.booking_status,
-            "drivers_notified": state.drivers_notified,
+            "driver_ids_notified": state.driver_ids_notified,  # Only driver IDs
             "last_activity": datetime.now().isoformat(),
         }
 
-        # Use pickle for complex objects
         return pickle.dumps(state_dict)
 
     def _deserialize_state(self, data: bytes) -> ConversationState:
-        """Deserialize bytes from Redis to ConversationState - FIXED for new flow"""
+        """Deserialize bytes to ConversationState - minimal version"""
         state_dict = pickle.loads(data)
 
         # Reconstruct chat history
@@ -208,7 +197,7 @@ class AsyncRedisSessionManager:
             for msg_dict in state_dict.get("chat_history", [])
         ]
 
-        # Create ConversationState - ONLY with fields that exist in new model
+        # Create minimal ConversationState
         state = ConversationState(
             chat_history=chat_history,
             applied_filters=state_dict.get("applied_filters", {}),
@@ -225,7 +214,7 @@ class AsyncRedisSessionManager:
             last_bot_response=state_dict.get("last_bot_response"),
             tool_calls=state_dict.get("tool_calls", []),
             booking_status=state_dict.get("booking_status"),
-            drivers_notified=state_dict.get("drivers_notified", 0)
+            driver_ids_notified=state_dict.get("driver_ids_notified", [])
         )
 
         return state
@@ -269,7 +258,7 @@ class AsyncRedisSessionManager:
                 # Save with TTL
                 await r.setex(key, self.config.session_ttl, data)
 
-                logger.debug(f"💾 Saved session for user {user_id} with {self.config.session_ttl}s TTL")
+                logger.debug(f"💾 Saved session for user {user_id}")
                 return True
 
             except Exception as e:
@@ -289,10 +278,6 @@ class AsyncRedisSessionManager:
                 if deleted:
                     logger.info(f"🗑️ Deleted session for user {user_id}")
 
-                # Also clear message cache
-                msg_key = self._get_message_cache_key(user_id)
-                await r.delete(msg_key)
-
                 return deleted
 
             except Exception as e:
@@ -311,33 +296,6 @@ class AsyncRedisSessionManager:
 
             except Exception as e:
                 logger.error(f"Error extending session for {user_id}: {e}")
-                return False
-
-    async def is_duplicate_message(self, user_id: str, message: str, timestamp: str) -> bool:
-        """Check if message is duplicate"""
-        async with self.get_redis() as r:
-            if not r:
-                return False
-            try:
-                key = self._get_message_cache_key(user_id)
-                message_id = f"{message}:{timestamp}"
-
-                exists = cast(bool, await r.sismember(key, message_id))
-
-                if not exists:
-                    await r.sadd(key, message_id)
-                    await r.expire(key, 3600)
-
-                    if cast(int, await r.scard(key)) > 100:
-                        members = cast(set[bytes], await r.smembers(key))
-                        if len(members) > 50:
-                            to_remove = list(members)[:-50]
-                            await r.srem(key, *to_remove)
-
-                return bool(exists)
-
-            except Exception as e:
-                logger.error(f"Error checking duplicate message: {e}")
                 return False
 
     async def get_all_active_sessions(self) -> List[str]:
@@ -410,8 +368,6 @@ class AsyncRedisSessionManager:
                     "redis_version": info.get("redis_version"),
                     "connected_clients": info.get("connected_clients"),
                     "used_memory_human": info.get("used_memory_human"),
-                    "total_connections_received": info.get("total_connections_received"),
-                    "total_commands_processed": info.get("total_commands_processed"),
                 }
 
             except Exception as e:

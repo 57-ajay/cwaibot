@@ -1,14 +1,14 @@
 # langgraph_agent/graph/builder.py
-"""Simplified LangGraph agent builder for new flow"""
+"""Simplified LangGraph agent builder"""
 
 from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage
 
 
-# Define the state type for proper typing - SIMPLIFIED for new flow
+# Define the minimal state type
 class GraphState(TypedDict, total=False):
-    """State definition for the graph - streamlined version"""
+    """Minimal state definition for the graph"""
     chat_history: List[BaseMessage]
     applied_filters: Dict[str, Any]
     trip_id: Optional[str]
@@ -24,7 +24,7 @@ class GraphState(TypedDict, total=False):
     last_bot_response: Optional[str]
     tool_calls: List[Dict[str, Any]]
     booking_status: Optional[str]
-    drivers_notified: int
+    driver_ids_notified: List[str]  # Only driver IDs
 
 
 # Import and wrap node functions
