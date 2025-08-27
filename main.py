@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
-
+from fastapi.middleware.cors import CORSMiddleware
 # Import your agent and state model
 from langgraph_agent.graph.builder import app as cab_agent
 from models.state_model import ConversationState
@@ -45,6 +45,18 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI with lifespan
 app = FastAPI(title="Cab Booking Bot", lifespan=lifespan)
+origins = [
+    "https://www.cabswale.ai",
+    "http://localhost:3000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Fallback in-memory storage for when Redis is unavailable
 fallback_storage: Dict[str, ConversationState] = {}

@@ -186,7 +186,7 @@ def send_availability_request(
 
         # Build payload with actual driver IDs
         payload = {
-            "driverIds": ["NewcOnEO5DdiDkhKwc8LjGapICB3"],# driver_ids,
+            "driverIds": driver_ids, #["NewcOnEO5DdiDkhKwc8LjGapICB3"],# driver_ids,
             "data": {
                 "trip_details": trip_details,
                 "customerDetails": {
