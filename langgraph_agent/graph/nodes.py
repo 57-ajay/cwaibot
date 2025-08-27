@@ -1,5 +1,5 @@
 # langgraph_agent/graph/nodes.py
-"""Graph nodes with minimal state tracking - only driver IDs"""
+"""Fixed graph nodes with proper filter processing for preferences"""
 
 import json
 import logging
@@ -96,7 +96,53 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # Get current date for context
     current_date_str = datetime.now().strftime("%Y-%m-%d")
-    prompt_with_date = bot_prompt.format(current_date=current_date_str)
+
+    # Enhanced prompt with filter instructions
+    enhanced_prompt = bot_prompt.format(current_date=current_date_str) + """
+
+## CRITICAL FILTER PROCESSING RULES:
+
+When user provides preferences, you MUST correctly map them to the exact filter parameters:
+
+**VEHICLE TYPES (CRITICAL):**
+- User says "SUV" or "Innova" or "Ertiga" → filters: {"vehicleTypes": ["suv"]}
+- User says "Sedan" or "Dzire" or "Etios" → filters: {"vehicleTypes": ["sedan"]}
+- User says "Hatchback" or "Swift" or "i20" → filters: {"vehicleTypes": ["hatchback"]}
+- User says "Tempo Traveller" → filters: {"vehicleTypes": ["tempoTraveller12Seater"]}
+- Multiple vehicles → filters: {"vehicleTypes": ["suv", "sedan"]}
+
+**BOOLEAN PREFERENCES:**
+- "married" or "married drivers" → filters: {"married": true}
+- "pet friendly" or "allows pets" → filters: {"isPetAllowed": true}
+- "verified" or "verified drivers" → filters: {"verified": true}
+- "handicap accessible" → filters: {"allowHandicappedPersons": true}
+- "for events" or "wedding" → filters: {"availableForDrivingInEventWedding": true}
+- "personal car" → filters: {"availableForCustomersPersonalCar": true}
+
+**LANGUAGE:**
+- "Hindi speaking" → filters: {"verifiedLanguages": ["Hindi"]}
+- "English and Punjabi" → filters: {"verifiedLanguages": ["English", "Punjabi"]}
+
+**EXPERIENCE/AGE:**
+- "experienced" or "5+ years" → filters: {"minExperience": 5}
+- "very experienced" or "10+ years" → filters: {"minExperience": 10}
+- "young drivers" → filters: {"maxAge": 30}
+- "middle aged" → filters: {"minAge": 30, "maxAge": 50}
+
+**GENDER:**
+- "male drivers" → filters: {"gender": "male"}
+- "female drivers" → filters: {"gender": "female"}
+
+**COMBINING FILTERS:**
+When user gives multiple preferences like "SUV and married drivers who speak Hindi":
+filters: {
+    "vehicleTypes": ["suv"],
+    "married": true,
+    "verifiedLanguages": ["Hindi"]
+}
+
+ALWAYS process ALL preferences mentioned by the user into the correct filter format!
+"""
 
     # Get chat history
     chat_history = state.get("chat_history", [])
@@ -123,8 +169,8 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
             state["start_date"] = extracted["start_date"]
             logger.info(f"  Setting start_date: {extracted['start_date']}")
 
-    # Build messages for LLM
-    messages = [SystemMessage(content=prompt_with_date)]
+    # Build messages for LLM with enhanced prompt
+    messages = [SystemMessage(content=enhanced_prompt)]
 
     if chat_history:
         messages.extend(chat_history)
@@ -150,8 +196,12 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "tool_calls": [],
                 }
             else:
-                # Agent wants to call tools
+                # Agent wants to call tools - log the tool calls for debugging
                 logger.info(f"🔧 Agent requesting tool calls")
+                for tool_call in ai_response.tool_calls:
+                    logger.info(f"  Tool: {tool_call.get('name')}")
+                    logger.info(f"  Args: {json.dumps(tool_call.get('args', {}), indent=2)}")
+
                 return {
                     **state,
                     "chat_history": updated_history,
@@ -195,6 +245,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         tool_id = tool_call.get("id")
 
         logger.info(f"\n🔧 Executing tool: {tool_name}")
+        logger.info(f"📋 Raw Tool Arguments: {json.dumps(tool_args, indent=2)}")
 
         tool_to_call = tool_map.get(tool_name)
         if not tool_to_call:
@@ -206,10 +257,12 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         try:
-            # Prepare tool arguments
+            # Prepare tool arguments with enhanced filter validation
             prepared_args = prepare_tool_arguments(tool_name, tool_args, state_updates)
 
             logger.info("\n📞 CALLING TOOL FUNCTION...")
+            logger.info(f"📨 Final Prepared Arguments: {json.dumps(prepared_args, indent=2)}")
+
             # Execute the tool
             output = tool_to_call.invoke(prepared_args)
             logger.info(f"\n✅ Tool execution completed")
@@ -259,8 +312,8 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dict) -> Dict[str, Any]:
-    """Prepare tool arguments with context from state"""
-    logger.info("\nPreparing tool arguments...")
+    """Prepare tool arguments with proper filter validation and processing"""
+    logger.info("\n🔧 Preparing tool arguments with filter validation...")
     args = tool_args.copy()
 
     if tool_name == "create_trip_and_check_availability":
@@ -276,11 +329,82 @@ def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dic
         logger.info(f"  Customer: {customer_details['name']} (ID: {customer_details['id']})")
         logger.info(f"  Route: {args.get('pickup_city')} to {args.get('drop_city')}")
 
-        # Process filters if provided
+        # CRITICAL: Validate and process filters
         if "filters" in args and args["filters"]:
-            args["filters"] = process_filter_values(args["filters"])
+            logger.info(f"  🎯 Processing Filters from LLM:")
+            logger.info(f"     Raw filters: {json.dumps(args['filters'], indent=2)}")
+
+            # Validate filter structure
+            validated_filters = validate_and_fix_filters(args["filters"])
+            args["filters"] = validated_filters
+
+            logger.info(f"     Validated filters: {json.dumps(validated_filters, indent=2)}")
 
     return args
+
+
+def validate_and_fix_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate and fix filter structure to ensure proper API compatibility
+    """
+    if not filters:
+        return {}
+
+    validated = {}
+
+    # Vehicle types validation - ensure it's a list
+    if "vehicleTypes" in filters:
+        vehicle_value = filters["vehicleTypes"]
+        if isinstance(vehicle_value, str):
+            # Convert single string to list
+            validated["vehicleTypes"] = [vehicle_value]
+        elif isinstance(vehicle_value, list):
+            # Keep as list
+            validated["vehicleTypes"] = vehicle_value
+        else:
+            logger.warning(f"Invalid vehicleTypes format: {vehicle_value}")
+
+    # Boolean filters - ensure they are actual booleans
+    boolean_fields = [
+        'married', 'isPetAllowed', 'verified', 'profileVerified',
+        'allowHandicappedPersons', 'availableForCustomersPersonalCar',
+        'availableForDrivingInEventWedding', 'availableForPartTimeFullTime'
+    ]
+
+    for field in boolean_fields:
+        if field in filters:
+            value = filters[field]
+            if isinstance(value, bool):
+                validated[field] = value
+            elif isinstance(value, str):
+                validated[field] = value.lower() in ['true', '1', 'yes']
+            else:
+                validated[field] = bool(value)
+
+    # Language validation - ensure it's a list
+    if "verifiedLanguages" in filters:
+        lang_value = filters["verifiedLanguages"]
+        if isinstance(lang_value, str):
+            validated["verifiedLanguages"] = [lang_value]
+        elif isinstance(lang_value, list):
+            validated["verifiedLanguages"] = lang_value
+
+    # Integer fields validation
+    integer_fields = ['minAge', 'maxAge', 'minExperience', 'minConnections', 'minDrivingExperience']
+    for field in integer_fields:
+        if field in filters:
+            try:
+                validated[field] = int(filters[field])
+            except (ValueError, TypeError):
+                logger.warning(f"Could not convert {field} to integer: {filters[field]}")
+
+    # Gender validation
+    if "gender" in filters:
+        gender_value = str(filters["gender"]).lower()
+        if gender_value in ['male', 'female']:
+            validated["gender"] = gender_value
+
+    return validated
 
 
 def update_state_from_tool_output(
@@ -310,43 +434,10 @@ def update_state_from_tool_output(
             logger.info(f"  ✅ State Updated:")
             logger.info(f"     - Trip ID: {state['trip_id']}")
             logger.info(f"     - Drivers Notified: {len(state['driver_ids_notified'])} driver IDs stored")
+            logger.info(f"     - Applied Filters: {state['applied_filters']}")
             logger.info(f"     - Booking Status: {state['booking_status']}")
 
 
 def process_filter_values(filters: Dict[str, Any]) -> Dict[str, Any]:
-    """Process filter values to ensure correct format for API"""
-    processed = {}
-
-    boolean_filters = {
-        'married', 'isPetAllowed', 'verified', 'profileVerified',
-        'allowHandicappedPersons', 'availableForCustomersPersonalCar',
-        'availableForDrivingInEventWedding', 'availableForPartTimeFullTime'
-    }
-
-    integer_filters = {
-        'minAge', 'maxAge', 'minExperience', 'minConnections', 'minDrivingExperience'
-    }
-
-    string_filters = {'verifiedLanguages', 'vehicleTypes', 'gender'}
-
-    for key, value in filters.items():
-        if value is None:
-            continue
-
-        try:
-            if key in boolean_filters:
-                if isinstance(value, str):
-                    processed[key] = value.lower() in ['true', '1', 'yes', 'on']
-                else:
-                    processed[key] = bool(value)
-            elif key in integer_filters:
-                processed[key] = int(value)
-            elif key in string_filters:
-                processed[key] = str(value)
-            else:
-                processed[key] = value
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid value for filter '{key}': {value} - {e}")
-            continue
-
-    return processed
+    """Legacy function - use validate_and_fix_filters instead"""
+    return validate_and_fix_filters(filters)

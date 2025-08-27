@@ -1,5 +1,5 @@
 # langgraph_agent/tools/drivers_tools.py
-"""Refactored driver tools - only fetch and store driver IDs"""
+"""Fixed driver tools with proper filter handling for preferences"""
 
 import logging
 from typing import Dict, Any, Optional, List
@@ -34,7 +34,7 @@ def create_trip_and_check_availability(
         customer_details: Dictionary containing customer's id, name, phone, and profile_image
         start_date: The start date for the trip, in YYYY-MM-DD format
         return_date: (Optional) The return date for a round-trip, in YYYY-MM-DD format
-        filters: (Optional) Driver preferences/filters
+        filters: (Optional) Driver preferences/filters - properly formatted for API
 
     Returns:
         Dictionary with operation status and driver IDs
@@ -44,6 +44,7 @@ def create_trip_and_check_availability(
     logger.info(f"Route: {pickup_city} to {drop_city}")
     logger.info(f"Trip Type: {trip_type}")
     logger.info(f"Customer: {customer_details.get('name')} (ID: {customer_details.get('id')})")
+    logger.info(f"Raw Filters Received: {filters}")
     logger.info("="*50)
 
     # STEP 1: CREATE THE TRIP
@@ -99,10 +100,16 @@ def create_trip_and_check_availability(
     trip_id = trip_data.get("tripId")
     logger.info(f"  ✅ TRIP CREATED: {trip_id}")
 
-    # STEP 2: GET DRIVER IDS BASED ON FILTERS
-    logger.info(f"\n🚗 STEP 2: Fetching Driver IDs from {pickup_city}...")
+    # STEP 2: PROCESS FILTERS PROPERLY
+    logger.info(f"\n🔧 STEP 2: Processing Filters...")
 
-    processed_filters = process_filter_types(filters) if filters else None
+    # Process filters using the new comprehensive function
+    processed_filters = process_filters_for_api(filters) if filters else {}
+
+    logger.info(f"  Processed Filters for API: {processed_filters}")
+
+    # STEP 3: GET DRIVER IDS BASED ON FILTERS
+    logger.info(f"\n🚗 STEP 3: Fetching Driver IDs from {pickup_city}...")
 
     # Fetch only driver IDs (not full details)
     driver_ids = api_client.get_driver_ids(
@@ -115,15 +122,15 @@ def create_trip_and_check_availability(
         logger.warning(f"  ⚠️ NO DRIVERS FOUND for {pickup_city}")
         return {
             "status": "partial_success",
-            "message": "Trip created but no drivers available currently.",
+            "message": "Trip created but no drivers available currently matching your preferences.",
             "trip_id": trip_id,
             "driver_ids": []
         }
 
-    logger.info(f"  ✅ Found {len(driver_ids)} drivers")
+    logger.info(f"  ✅ Found {len(driver_ids)} drivers matching filters")
 
-    # STEP 3: SEND AVAILABILITY REQUEST
-    logger.info(f"\n📤 STEP 3: Sending Availability Requests to {len(driver_ids)} drivers...")
+    # STEP 4: SEND AVAILABILITY REQUEST
+    logger.info(f"\n📤 STEP 4: Sending Availability Requests to {len(driver_ids)} drivers...")
 
     # Prepare trip details for availability check
     trip_details = {
@@ -135,22 +142,13 @@ def create_trip_and_check_availability(
         "trip_type": trip_type,
     }
 
-    # Convert filters for availability API
-    user_filters = {}
-    if processed_filters:
-        for key, value in processed_filters.items():
-            if isinstance(value, bool):
-                user_filters[key] = "true" if value else "false"
-            else:
-                user_filters[key] = value
-
     # Send availability request
     availability_response = api_client.send_availability_request(
         trip_id,
         driver_ids,
         trip_details,
         customer_details,
-        user_filters
+        processed_filters  # Pass the processed filters directly
     )
 
     if not availability_response:
@@ -179,47 +177,115 @@ def create_trip_and_check_availability(
     }
 
 
-def process_filter_types(filters: Dict[str, Any]) -> Dict[str, Any]:
-    """Process filters to ensure correct data types for API"""
-    logger.info("  Processing filter types...")
+def process_filters_for_api(filters: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process filters to match the exact format expected by the botApiGetPremiumDrivers API.
+    This function ensures proper parameter names and types.
+    """
+    logger.info("  Processing filters for API compatibility...")
     processed = {}
 
-    integer_filters = {
-        'minAge', 'maxAge', 'minExperience', 'minConnections',
-        'minDrivingExperience', 'fraudReports'
+    if not filters:
+        return processed
+
+    # CRITICAL FIX: Handle vehicleTypes properly
+    # The API expects 'vehicles' as a comma-separated string, NOT 'vehicleTypes'
+    if 'vehicleTypes' in filters:
+        vehicle_value = filters['vehicleTypes']
+        if isinstance(vehicle_value, list):
+            processed['vehicles'] = ','.join(vehicle_value)
+        else:
+            processed['vehicles'] = str(vehicle_value)
+        logger.info(f"    Vehicle filter: {processed['vehicles']}")
+
+    # Also check if 'vehicles' was passed directly
+    elif 'vehicles' in filters:
+        vehicle_value = filters['vehicles']
+        if isinstance(vehicle_value, list):
+            processed['vehicles'] = ','.join(vehicle_value)
+        else:
+            processed['vehicles'] = str(vehicle_value)
+        logger.info(f"    Vehicle filter: {processed['vehicles']}")
+
+    # Language handling - API expects 'language' not 'verifiedLanguages'
+    if 'verifiedLanguages' in filters:
+        lang_value = filters['verifiedLanguages']
+        if isinstance(lang_value, list):
+            # API seems to expect single language, so take first
+            processed['language'] = lang_value[0] if lang_value else None
+        else:
+            processed['language'] = str(lang_value)
+        logger.info(f"    Language filter: {processed['language']}")
+    elif 'language' in filters:
+        processed['language'] = str(filters['language'])
+
+    # Boolean filters - convert to "true"/"false" strings as API expects
+    boolean_params = {
+        'isPetAllowed': 'isPetAllowed',
+        'married': 'married',
+        'allowHandicappedPersons': 'allowHandicappedPersons',
+        'availableForCustomersPersonalCar': 'availableForCustomersPersonalCar',
+        'availableForDrivingInEventWedding': 'availableForDrivingInEventWedding',
+        'availableForPartTimeFullTime': 'availableForPartTimeFullTime',
+        'verified': 'verified',
+        'profileVerified': 'profileVerified'
     }
 
-    boolean_filters = {
-        'isPetAllowed', 'married', 'profileVerified', 'verified',
-        'allowHandicappedPersons', 'availableForCustomersPersonalCar',
-        'availableForDrivingInEventWedding', 'availableForPartTimeFullTime'
+    for filter_key, api_param in boolean_params.items():
+        if filter_key in filters:
+            value = filters[filter_key]
+            if isinstance(value, bool):
+                processed[api_param] = "true" if value else "false"
+            elif isinstance(value, str):
+                processed[api_param] = "true" if value.lower() in ['true', '1', 'yes'] else "false"
+            logger.info(f"    {api_param}: {processed[api_param]}")
+
+    # Integer filters
+    integer_params = {
+        'minAge': 'minAge',
+        'maxAge': 'maxAge',
+        'minConnections': 'minConnections',
+        'minExperience': 'minDrivingExperience',  # Map to correct API param
+        'minDrivingExperience': 'minDrivingExperience'
     }
 
-    string_filters = {
-        'verifiedLanguages', 'vehicleTypes', 'gender'
-    }
+    for filter_key, api_param in integer_params.items():
+        if filter_key in filters and filters[filter_key] is not None:
+            try:
+                processed[api_param] = int(filters[filter_key])
+                logger.info(f"    {api_param}: {processed[api_param]}")
+            except (ValueError, TypeError):
+                logger.warning(f"    Could not convert {filter_key} to integer: {filters[filter_key]}")
 
-    for key, value in filters.items():
-        if value is None:
-            continue
+    # Gender filter
+    if 'gender' in filters:
+        gender_value = str(filters['gender']).lower()
+        if gender_value in ['male', 'female']:
+            processed['gender'] = gender_value
+            logger.info(f"    Gender filter: {processed['gender']}")
 
-        try:
-            if key in integer_filters:
-                processed[key] = int(value)
-            elif key in boolean_filters:
-                if isinstance(value, bool):
-                    processed[key] = value
-                elif isinstance(value, str):
-                    processed[key] = value.lower() in ['true', '1', 'yes', 'on']
-                else:
-                    processed[key] = bool(value)
-            elif key in string_filters:
-                processed[key] = str(value)
-            else:
-                processed[key] = value
+    # Special handling for preference strings that getPartnersByLocation expects
+    # The API seems to look for specific preference values
+    preference_list = []
 
-        except (ValueError, TypeError) as e:
-            logger.error(f"    Error processing filter '{key}' with value '{value}': {e}")
-            continue
+    # Map certain filters to preference values
+    if processed.get('isPetAllowed') == "true":
+        preference_list.append('isPetAllowed')
+    if processed.get('married') == "true":
+        preference_list.append('married')
+    if processed.get('verified') == "true" or processed.get('profileVerified') == "true":
+        preference_list.append('trainedLevel1')
 
+    # The API handles preferences differently - it needs specific strings
+    # But we're already passing individual params, so this might be redundant
+    # Keeping for compatibility if needed
+
+    logger.info(f"  Final processed filters: {processed}")
     return processed
+
+
+def process_filter_types(filters: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Legacy function - redirects to new comprehensive filter processor
+    """
+    return process_filters_for_api(filters)
