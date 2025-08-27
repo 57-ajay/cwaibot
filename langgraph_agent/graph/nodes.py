@@ -4,7 +4,7 @@
 import json
 import logging
 import re
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
 from langchain_core.messages import SystemMessage, ToolMessage, AIMessage, HumanMessage
