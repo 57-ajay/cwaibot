@@ -1,9 +1,10 @@
 # langgraph_agent/graph/nodes.py
-"""Fixed graph nodes with proper filter processing for preferences"""
+"""Enhanced intelligent agent with minimal questions and natural conversation flow"""
 
 import json
 import logging
-from typing import Dict, Any, List, Optional
+import re
+from typing import Dict, Any
 from datetime import datetime, timedelta
 
 from langchain_core.messages import SystemMessage, ToolMessage, AIMessage, HumanMessage
@@ -25,63 +26,263 @@ llm = ChatVertexAI(model="gemini-2.0-flash", temperature=0.7)
 llm_with_tools = llm.bind_tools(tools)
 
 
+def is_driver_query(message: str) -> bool:
+    """Check if the message is from a driver looking for duty/rides"""
+    message_lower = message.lower()
+
+    # Driver-specific keywords
+    driver_indicators = [
+        "i need duty", "i want duty", "duty chahiye", "duty milegi",
+        "i want to ride", "i want ride", "ride chahiye",
+        "driver hun", "driver hoon", "i am driver", "i'm a driver",
+        "duty from", "duty to", "ride from", "ride to",
+        "koi duty", "any duty", "duty available",
+        "partner", "i drive", "main driver"
+    ]
+
+    # Check if any driver indicator is present
+    for indicator in driver_indicators:
+        if indicator in message_lower:
+            return True
+
+    return False
+
+
+def detect_language(message: str) -> str:
+    """Detect the language/style of user's message"""
+    message_lower = message.lower()
+
+    # Hindi/Hinglish indicators
+    hindi_words = ["chahiye", "hai", "hoon", "hun", "kya", "kab", "kaise", "kitne",
+                   "kal", "aaj", "parso", "gaadi", "log", "bhai", "ji", "kripya",
+                   "dhanyawad", "shukriya", "namaste", "aapka", "mujhe", "mere"]
+
+    hindi_count = sum(1 for word in hindi_words if word in message_lower)
+
+    if hindi_count >= 2:
+        return "hinglish"
+    elif any(word in message_lower for word in ["please", "thank", "hello", "hi", "need", "want"]):
+        return "english"
+    else:
+        return "english"  # default
+
+
+def infer_vehicle_from_context(message: str, current_filters: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Intelligently infer vehicle type from user message context
+    """
+    message_lower = message.lower()
+    filters = current_filters.copy() if current_filters else {}
+
+    # Pattern to find numbers with context about people/passengers
+    people_patterns = [
+        r'(\d+)\s*(?:people|persons|passengers|pax|members|adults|children)',
+        r'(?:for|need|want|require|book)\s*(?:a\s*)?(?:cab|taxi|car)\s*for\s*(\d+)',
+        r'(?:we\s*are|we\'re)\s*(\d+)\s*(?:people|persons)?',
+        r'(\d+)\s*(?:of us|log|jane wale)',
+        r'(?:total|around|about|approximately)\s*(\d+)\s*(?:people|persons)?',
+        r'(\d+)\s*(?:seater|seat)',
+        r'family of\s*(\d+)',
+        r'group of\s*(\d+)',
+    ]
+
+    passenger_count = None
+    for pattern in people_patterns:
+        match = re.search(pattern, message_lower)
+        if match:
+            passenger_count = int(match.group(1))
+            break
+
+    # Check for implicit passenger count indicators
+    if not passenger_count:
+        if any(word in message_lower for word in ["family", "group", "team", "friends"]):
+            # Assume a small group if not specified
+            passenger_count = 4
+        elif any(word in message_lower for word in ["couple", "wife and", "husband and", "partner and"]):
+            passenger_count = 2
+        elif any(word in message_lower for word in ["alone", "solo", "myself", "just me"]):
+            passenger_count = 1
+
+    # Handle passenger count based rules
+    if passenger_count:
+        logger.info(f"  🚗 Detected/Inferred passenger count: {passenger_count}")
+
+        if passenger_count >= 9:
+            # 9 or more -> 12 seater tempo
+            filters["vehicleTypes"] = ["tempoTraveller12Seater"]
+            filters["auto_inferred"] = True
+            filters["passenger_count"] = passenger_count
+            logger.info(f"  📋 Auto-selected: 12-seater Tempo Traveller for {passenger_count} passengers")
+
+        elif passenger_count >= 5:
+            # 5-8 -> SUV
+            filters["vehicleTypes"] = ["suv"]
+            filters["auto_inferred"] = True
+            filters["passenger_count"] = passenger_count
+            logger.info(f"  📋 Auto-selected: SUV for {passenger_count} passengers")
+        else:
+            # 1-4 passengers - don't auto-select vehicle, but note the count
+            filters["passenger_count"] = passenger_count
+            logger.info(f"  📋 {passenger_count} passengers noted - will ask preferences naturally")
+
+    # Check for explicit vehicle mentions (override passenger-based selection if explicit)
+    vehicle_mappings = {
+        "suv": ["suv", "innova", "ertiga", "xuv", "scorpio", "fortuner", "crysta", "hexa", "safari"],
+        "sedan": ["sedan", "dzire", "etios", "amaze", "city", "verna", "ciaz", "rapid", "vento"],
+        "hatchback": ["hatchback", "swift", "i20", "i10", "wagon", "alto", "baleno", "jazz", "polo"],
+        "tempoTraveller12Seater": ["tempo", "traveller", "12 seater", "12-seater", "minibus", "van"]
+    }
+
+    for vehicle_type, keywords in vehicle_mappings.items():
+        for keyword in keywords:
+            if keyword in message_lower:
+                filters["vehicleTypes"] = [vehicle_type]
+                filters["explicit_vehicle"] = True
+                logger.info(f"  📋 Explicit vehicle preference detected: {vehicle_type}")
+                return filters  # Return immediately if explicit vehicle mentioned
+
+    # Handle vague size mentions only if no explicit vehicle or passenger count
+    if not filters.get("vehicleTypes") and not passenger_count:
+        if "big car" in message_lower or "large car" in message_lower or "badi gaadi" in message_lower:
+            filters["vehicleTypes"] = ["suv"]  # Default to SUV for "big car"
+            logger.info("  📋 'Big car' mentioned - defaulting to SUV")
+        elif "small car" in message_lower or "choti gaadi" in message_lower or "compact" in message_lower:
+            filters["vehicleTypes"] = ["hatchback"]
+            logger.info("  📋 Small/compact car requested - selected Hatchback")
+        elif any(word in message_lower for word in ["comfortable", "luxury", "premium"]):
+            filters["vehicleTypes"] = ["suv"]
+            logger.info("  📋 Comfort/luxury requested - selected SUV")
+        elif any(word in message_lower for word in ["budget", "cheap", "economical", "affordable"]):
+            filters["vehicleTypes"] = ["hatchback"]
+            logger.info("  📋 Budget option requested - selected Hatchback")
+
+    return filters
+
+
 def extract_trip_details_from_message(message: str, current_date: str) -> Dict[str, Any]:
-    """Extract trip details from user message"""
+    """Extract all possible trip details from user message"""
     extracted = {}
     message_lower = message.lower()
 
-    # Common Indian cities
-    cities = [
-        "delhi", "mumbai", "bangalore", "bengaluru", "chennai", "kolkata",
-        "hyderabad", "pune", "ahmedabad", "jaipur", "surat", "lucknow",
-        "kanpur", "nagpur", "indore", "bhopal", "patna", "vadodara",
-        "ghaziabad", "ludhiana", "agra", "nashik", "faridabad", "meerut",
-        "rajkot", "varanasi", "srinagar", "aurangabad", "dhanbad", "amritsar",
-        "gurgaon", "gurugram", "noida", "chandigarh", "mysore", "mysuru"
+    # More flexible city extraction
+    # Pattern 1: "from X to Y" or "X to Y" or "X se Y"
+    city_patterns = [
+        r'(?:from\s+)?([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s+(?:to|se)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)',
+        r'(?:need|want|book).*?(?:from\s+)?([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s+(?:to|se)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)',
     ]
 
-    # Find cities mentioned
-    found_cities = []
-    for city in cities:
-        if city in message_lower:
-            found_cities.append(city.title())
+    for pattern in city_patterns:
+        match = re.search(pattern, message_lower)
+        if match:
+            pickup = match.group(1).strip()
+            drop = match.group(2).strip()
 
-    # Determine pickup and drop from context
-    if "from" in message_lower and "to" in message_lower:
-        parts = message_lower.split("from")[1].split("to")
-        if len(parts) >= 2:
-            for city in cities:
-                if city in parts[0]:
-                    extracted["pickup_city"] = city.title()
-                if city in parts[1]:
-                    extracted["drop_city"] = city.title()
-    elif " to " in message_lower or " se " in message_lower:
-        if len(found_cities) >= 2:
-            extracted["pickup_city"] = found_cities[0]
-            extracted["drop_city"] = found_cities[1]
+            # Filter out common words that aren't cities
+            common_words = ['cab', 'taxi', 'car', 'trip', 'ride', 'need', 'want', 'book', 'a', 'the', 'me']
+            if pickup not in common_words and drop not in common_words:
+                extracted["pickup_city"] = ' '.join(word.capitalize() for word in pickup.split())
+                extracted["drop_city"] = ' '.join(word.capitalize() for word in drop.split())
+                logger.info(f"  Extracted cities: {extracted['pickup_city']} to {extracted['drop_city']}")
+                break
 
     # Extract trip type
-    if "one-way" in message_lower or "one way" in message_lower or "oneway" in message_lower:
+    if any(term in message_lower for term in ["one-way", "one way", "oneway", "single", "one side"]):
         extracted["trip_type"] = "one-way"
-    elif "round-trip" in message_lower or "round trip" in message_lower or "roundtrip" in message_lower or "return" in message_lower:
+    elif any(term in message_lower for term in ["round-trip", "round trip", "roundtrip", "return", "two way", "both way"]):
         extracted["trip_type"] = "round-trip"
+    # If not specified, we'll ask later but default to one-way for now
+    elif extracted.get("pickup_city") and extracted.get("drop_city"):
+        # Don't set trip type, let agent ask if needed
+        pass
 
-    # Extract date
+    # Extract date with more patterns
     current = datetime.strptime(current_date, "%Y-%m-%d")
 
-    if "tomorrow" in message_lower or "kal" in message_lower:
+    # Tomorrow patterns
+    if any(word in message_lower for word in ["tomorrow", "kal", "next day"]):
         extracted["start_date"] = (current + timedelta(days=1)).strftime("%Y-%m-%d")
-    elif "today" in message_lower or "aaj" in message_lower:
+    # Today patterns
+    elif any(word in message_lower for word in ["today", "aaj", "now", "immediate", "urgent"]):
         extracted["start_date"] = current_date
-    elif "day after tomorrow" in message_lower or "parso" in message_lower:
+    # Day after tomorrow
+    elif any(phrase in message_lower for phrase in ["day after tomorrow", "parso", "day after"]):
         extracted["start_date"] = (current + timedelta(days=2)).strftime("%Y-%m-%d")
+    # Specific date patterns (e.g., "on 25th", "25 dec", etc.)
+    else:
+        # Try to find date patterns
+        date_match = re.search(r'(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))?', message_lower)
+        if date_match:
+            day = int(date_match.group(1))
+            month = date_match.group(2)
+
+            if month:
+                month_map = {
+                    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+                    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+                }
+                month_num = month_map.get(month, current.month)
+                year = current.year
+
+                # If the date has passed this year, assume next year
+                try:
+                    target_date = datetime(year, month_num, day)
+                    if target_date < current:
+                        target_date = datetime(year + 1, month_num, day)
+                    extracted["start_date"] = target_date.strftime("%Y-%m-%d")
+                except ValueError:
+                    pass  # Invalid date, skip
+            else:
+                # Just day number, assume current month
+                try:
+                    target_date = datetime(current.year, current.month, day)
+                    if target_date < current:
+                        # If date has passed, assume next month
+                        if current.month == 12:
+                            target_date = datetime(current.year + 1, 1, day)
+                        else:
+                            target_date = datetime(current.year, current.month + 1, day)
+                    extracted["start_date"] = target_date.strftime("%Y-%m-%d")
+                except ValueError:
+                    pass  # Invalid date, skip
+
+    # Apply vehicle inference
+    vehicle_filters = infer_vehicle_from_context(message, {})
+    if vehicle_filters:
+        extracted["inferred_filters"] = vehicle_filters
+
+    # Extract any other preferences mentioned
+    preferences = {}
+
+    # Language preferences
+    languages = ["hindi", "english", "punjabi", "gujarati", "marathi", "tamil", "telugu", "bengali"]
+    mentioned_langs = [lang.capitalize() for lang in languages if lang in message_lower]
+    if mentioned_langs:
+        preferences["verifiedLanguages"] = mentioned_langs
+
+    # Driver preferences
+    if any(word in message_lower for word in ["experienced", "expert", "senior"]):
+        preferences["minExperience"] = 5
+    if any(word in message_lower for word in ["very experienced", "highly experienced"]):
+        preferences["minExperience"] = 10
+    if "married" in message_lower:
+        preferences["married"] = True
+    if any(word in message_lower for word in ["pet", "dog", "cat"]):
+        preferences["isPetAllowed"] = True
+    if any(word in message_lower for word in ["verified", "certified"]):
+        preferences["verified"] = True
+
+    if preferences:
+        if "inferred_filters" in extracted:
+            extracted["inferred_filters"].update(preferences)
+        else:
+            extracted["inferred_filters"] = preferences
 
     logger.info(f"Extracted trip details: {extracted}")
     return extracted
 
 
 def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Agent node that processes messages and decides actions"""
+    """Intelligent agent node that minimizes questions and maximizes efficiency"""
     logger.info("\n" + "="*50)
     logger.info("AGENT NODE EXECUTION")
     logger.info("="*50)
@@ -92,84 +293,148 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(f"  - Trip ID: {state.get('trip_id')}")
     logger.info(f"  - Route: {state.get('pickup_location')} to {state.get('drop_location')}")
     logger.info(f"  - Booking Status: {state.get('booking_status')}")
-    logger.info(f"  - Drivers Notified: {len(state.get('driver_ids_notified', []))}")
+    logger.info(f"  - Current Filters: {state.get('applied_filters', {})}")
 
     # Get current date for context
     current_date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Enhanced prompt with filter instructions
-    enhanced_prompt = bot_prompt.format(current_date=current_date_str) + """
-
-## CRITICAL FILTER PROCESSING RULES:
-
-When user provides preferences, you MUST correctly map them to the exact filter parameters:
-
-**VEHICLE TYPES (CRITICAL):**
-- User says "SUV" or "Innova" or "Ertiga" → filters: {"vehicleTypes": ["suv"]}
-- User says "Sedan" or "Dzire" or "Etios" → filters: {"vehicleTypes": ["sedan"]}
-- User says "Hatchback" or "Swift" or "i20" → filters: {"vehicleTypes": ["hatchback"]}
-- User says "Tempo Traveller" → filters: {"vehicleTypes": ["tempoTraveller12Seater"]}
-- Multiple vehicles → filters: {"vehicleTypes": ["suv", "sedan"]}
-
-**BOOLEAN PREFERENCES:**
-- "married" or "married drivers" → filters: {"married": true}
-- "pet friendly" or "allows pets" → filters: {"isPetAllowed": true}
-- "verified" or "verified drivers" → filters: {"verified": true}
-- "handicap accessible" → filters: {"allowHandicappedPersons": true}
-- "for events" or "wedding" → filters: {"availableForDrivingInEventWedding": true}
-- "personal car" → filters: {"availableForCustomersPersonalCar": true}
-
-**LANGUAGE:**
-- "Hindi speaking" → filters: {"verifiedLanguages": ["Hindi"]}
-- "English and Punjabi" → filters: {"verifiedLanguages": ["English", "Punjabi"]}
-
-**EXPERIENCE/AGE:**
-- "experienced" or "5+ years" → filters: {"minExperience": 5}
-- "very experienced" or "10+ years" → filters: {"minExperience": 10}
-- "young drivers" → filters: {"maxAge": 30}
-- "middle aged" → filters: {"minAge": 30, "maxAge": 50}
-
-**GENDER:**
-- "male drivers" → filters: {"gender": "male"}
-- "female drivers" → filters: {"gender": "female"}
-
-**COMBINING FILTERS:**
-When user gives multiple preferences like "SUV and married drivers who speak Hindi":
-filters: {
-    "vehicleTypes": ["suv"],
-    "married": true,
-    "verifiedLanguages": ["Hindi"]
-}
-
-ALWAYS process ALL preferences mentioned by the user into the correct filter format!
-"""
-
     # Get chat history
     chat_history = state.get("chat_history", [])
 
-    # Check if this is a new conversation and extract trip details
-    if len(chat_history) == 1 and isinstance(chat_history[0], HumanMessage):
-        user_message = chat_history[0].content
-        extracted = extract_trip_details_from_message(user_message, current_date_str)
+    # Check for driver queries first
+    if chat_history and isinstance(chat_history[-1], HumanMessage):
+        user_message = chat_history[-1].content
 
-        # Update state with extracted details if not already set
+        if is_driver_query(user_message):
+            logger.info("  🚗 Detected DRIVER query - redirecting to partner support")
+
+            language = detect_language(user_message)
+            if language == "hinglish":
+                response = "Namaste! Main sirf customer bookings handle karta hun. Partner/driver queries ke liye kripya +919403890306 par call karein. Dhanyawad!"
+            else:
+                response = "Hello! I handle customer bookings only. For partner/driver queries, please call +919403890306. Thank you!"
+
+            return {
+                **state,
+                "chat_history": chat_history + [AIMessage(content=response)],
+                "last_bot_response": response,
+                "tool_calls": [],
+            }
+
+    # Process current message for all details
+    if chat_history and isinstance(chat_history[-1], HumanMessage):
+        current_message = chat_history[-1].content
+
+        # Extract all details from current message
+        extracted = extract_trip_details_from_message(current_message, current_date_str)
+
+        # Update state with extracted details
         if extracted.get("pickup_city") and not state.get("pickup_location"):
             state["pickup_location"] = extracted["pickup_city"]
-            logger.info(f"  Setting pickup_location: {extracted['pickup_city']}")
+            logger.info(f"  Setting pickup: {extracted['pickup_city']}")
 
         if extracted.get("drop_city") and not state.get("drop_location"):
             state["drop_location"] = extracted["drop_city"]
-            logger.info(f"  Setting drop_location: {extracted['drop_city']}")
+            logger.info(f"  Setting drop: {extracted['drop_city']}")
 
         if extracted.get("trip_type") and not state.get("trip_type"):
             state["trip_type"] = extracted["trip_type"]
-            logger.info(f"  Setting trip_type: {extracted['trip_type']}")
+            logger.info(f"  Setting trip type: {extracted['trip_type']}")
 
         if extracted.get("start_date") and not state.get("start_date"):
             state["start_date"] = extracted["start_date"]
-            logger.info(f"  Setting start_date: {extracted['start_date']}")
+            logger.info(f"  Setting date: {extracted['start_date']}")
 
-    # Build messages for LLM with enhanced prompt
+        # Update filters
+        if extracted.get("inferred_filters"):
+            existing_filters = state.get("applied_filters", {})
+            merged_filters = {**existing_filters, **extracted["inferred_filters"]}
+            state["applied_filters"] = merged_filters
+            logger.info(f"  Updated filters: {merged_filters}")
+
+    # Build enhanced prompt with smart rules
+    applied_filters_str = json.dumps(state.get('applied_filters', {}))
+
+    enhanced_prompt = bot_prompt.format(current_date=current_date_str) + f"""
+
+## ULTRA-SMART BOOKING RULES:
+
+### MINIMIZE QUESTIONS - MAXIMIZE EFFICIENCY:
+1. **NEVER ask for information already provided** - Check state for pickup, drop, date, trip type
+2. **Extract everything possible** from user's message before asking anything
+3. **Group missing information** - Ask for all missing items in ONE question
+4. **Smart defaults when appropriate**:
+   - No passenger count mentioned = Assume 1-2 passengers, proceed without asking vehicle type
+   - No trip type mentioned = Ask along with other missing info
+   - No date mentioned = Ask along with other missing info
+
+### VEHICLE SELECTION INTELLIGENCE:
+
+**AUTO-SELECT WITHOUT ASKING:**
+- 9+ passengers → 12-seater Tempo Traveller
+- 5-8 passengers → SUV
+- Explicit vehicle mention → Use that vehicle
+- "big car" → SUV
+- "small car" → Hatchback
+- "budget" → Hatchback
+- "comfortable"/"luxury" → SUV
+
+**FOR 1-4 PASSENGERS OR NO COUNT:**
+- DON'T ask "which vehicle type"
+- Instead ask naturally: "Any preferences for the trip?" or "Any specific requirements?"
+- Let them mention if they want specific vehicle, else proceed with their response
+
+### SMART CONVERSATION FLOW:
+
+**Current State Check:**
+- Pickup: {state.get('pickup_location', 'Not set')}
+- Drop: {state.get('drop_location', 'Not set')}
+- Date: {state.get('start_date', 'Not set')}
+- Trip Type: {state.get('trip_type', 'Not set')}
+- Filters: {applied_filters_str}
+
+**Response Strategy:**
+1. If ALL critical info available (pickup, drop, date) → Jump to preferences
+2. If SOME info missing → Ask ONLY for missing info in one natural question
+3. If vehicle auto-selected → Mention it casually, don't make it a big deal
+4. Keep responses short, natural, and contextual
+
+### NATURAL LANGUAGE PATTERNS:
+
+**When everything is provided:**
+"Perfect! [Optional: mention auto-selected vehicle if 5+ passengers]. Any specific preferences or requirements for your trip?"
+
+**When asking for missing info (examples):**
+- Missing date only: "When would you like to travel?"
+- Missing date + trip type: "When are you planning to travel, and will it be one-way or round trip?"
+- Missing pickup: "Where will you be starting from?"
+
+**NEVER say things like:**
+- "I can help you book" (when they already asked for booking)
+- "Where would you like to travel from and to?" (when already provided)
+- "Which vehicle type would you prefer?" (deduce it or ask preferences generally)
+
+### PREFERENCE COLLECTION:
+
+**Smart preference ask (after getting trip details):**
+- For 5+ passengers with auto-selected vehicle:
+  "I'll arrange a [vehicle type] for your group. Any other preferences like language or specific requirements?"
+
+- For 1-4 passengers or no count:
+  "Any specific preferences for your trip?" (let them mention what they want)
+
+- When they say "no preferences":
+  Immediately proceed with booking, don't ask again
+
+### CRITICAL: ALWAYS INCLUDE FILTERS IN TOOL CALL
+Current filters in state: {applied_filters_str}
+- If vehicle was auto-selected or mentioned, MUST include in tool call
+- Merge state filters with any new preferences before calling tool
+
+Remember: Be smart, efficient, and natural. Every extra question is friction - minimize it!
+"""
+
+    # Build messages for LLM
     messages = [SystemMessage(content=enhanced_prompt)]
 
     if chat_history:
@@ -196,7 +461,7 @@ ALWAYS process ALL preferences mentioned by the user into the correct filter for
                     "tool_calls": [],
                 }
             else:
-                # Agent wants to call tools - log the tool calls for debugging
+                # Agent wants to call tools
                 logger.info(f"🔧 Agent requesting tool calls")
                 for tool_call in ai_response.tool_calls:
                     logger.info(f"  Tool: {tool_call.get('name')}")
@@ -257,7 +522,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         try:
-            # Prepare tool arguments with enhanced filter validation
+            # Prepare tool arguments
             prepared_args = prepare_tool_arguments(tool_name, tool_args, state_updates)
 
             logger.info("\n📞 CALLING TOOL FUNCTION...")
@@ -300,7 +565,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 )
             )
 
-    # Update the chat history and clear the tool calls
+    # Update the chat history
     state_updates["chat_history"] = state.get("chat_history", []) + tool_messages
     state_updates["tool_calls"] = []
 
@@ -312,8 +577,8 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dict) -> Dict[str, Any]:
-    """Prepare tool arguments with proper filter validation and processing"""
-    logger.info("\n🔧 Preparing tool arguments with filter validation...")
+    """Prepare tool arguments with smart filter merging"""
+    logger.info("\n🔧 Preparing tool arguments...")
     args = tool_args.copy()
 
     if tool_name == "create_trip_and_check_availability":
@@ -329,42 +594,59 @@ def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dic
         logger.info(f"  Customer: {customer_details['name']} (ID: {customer_details['id']})")
         logger.info(f"  Route: {args.get('pickup_city')} to {args.get('drop_city')}")
 
-        # CRITICAL: Validate and process filters
-        if "filters" in args and args["filters"]:
-            logger.info(f"  🎯 Processing Filters from LLM:")
-            logger.info(f"     Raw filters: {json.dumps(args['filters'], indent=2)}")
+        # CRITICAL: Merge filters from state with tool args
+        state_filters = state.get("applied_filters", {})
+        tool_filters = args.get("filters", {})
 
+        # Merge filters intelligently
+        merged_filters = {}
+
+        # Add state filters (auto-inferred)
+        if state_filters:
+            logger.info(f"  🎯 State filters: {state_filters}")
+            for key, value in state_filters.items():
+                if key not in ['auto_inferred', 'passenger_count', 'needs_clarification', 'explicit_vehicle']:
+                    merged_filters[key] = value
+
+        # Add tool filters (from LLM)
+        if tool_filters:
+            logger.info(f"  🎯 Tool filters: {tool_filters}")
+            for key, value in tool_filters.items():
+                # Don't override vehicle if explicitly set in state
+                if key == "vehicleTypes" and "vehicleTypes" in merged_filters and state_filters.get("explicit_vehicle"):
+                    continue
+                merged_filters[key] = value
+
+        if merged_filters:
+            logger.info(f"  🎯 Merged filters: {merged_filters}")
             # Validate filter structure
-            validated_filters = validate_and_fix_filters(args["filters"])
+            validated_filters = validate_and_fix_filters(merged_filters)
             args["filters"] = validated_filters
-
-            logger.info(f"     Validated filters: {json.dumps(validated_filters, indent=2)}")
+            logger.info(f"  ✅ Validated filters: {validated_filters}")
+        else:
+            args["filters"] = {}
 
     return args
 
 
 def validate_and_fix_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Validate and fix filter structure to ensure proper API compatibility
-    """
+    """Validate and fix filter structure for API compatibility"""
     if not filters:
         return {}
 
     validated = {}
 
-    # Vehicle types validation - ensure it's a list
+    # Vehicle types validation
     if "vehicleTypes" in filters:
         vehicle_value = filters["vehicleTypes"]
         if isinstance(vehicle_value, str):
-            # Convert single string to list
             validated["vehicleTypes"] = [vehicle_value]
         elif isinstance(vehicle_value, list):
-            # Keep as list
             validated["vehicleTypes"] = vehicle_value
         else:
             logger.warning(f"Invalid vehicleTypes format: {vehicle_value}")
 
-    # Boolean filters - ensure they are actual booleans
+    # Boolean filters
     boolean_fields = [
         'married', 'isPetAllowed', 'verified', 'profileVerified',
         'allowHandicappedPersons', 'availableForCustomersPersonalCar',
@@ -381,7 +663,7 @@ def validate_and_fix_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 validated[field] = bool(value)
 
-    # Language validation - ensure it's a list
+    # Language validation
     if "verifiedLanguages" in filters:
         lang_value = filters["verifiedLanguages"]
         if isinstance(lang_value, str):
@@ -389,7 +671,7 @@ def validate_and_fix_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
         elif isinstance(lang_value, list):
             validated["verifiedLanguages"] = lang_value
 
-    # Integer fields validation
+    # Integer fields
     integer_fields = ['minAge', 'maxAge', 'minExperience', 'minConnections', 'minDrivingExperience']
     for field in integer_fields:
         if field in filters:
@@ -413,7 +695,7 @@ def update_state_from_tool_output(
     tool_args: Dict[str, Any],
     state: dict
 ) -> None:
-    """Update state based on tool output - only store driver IDs"""
+    """Update state based on tool output"""
     logger.info("\nUpdating state from tool output...")
 
     if tool_name == "create_trip_and_check_availability":
@@ -427,17 +709,10 @@ def update_state_from_tool_output(
             state["end_date"] = tool_args.get("return_date") or tool_args.get("start_date")
             state["applied_filters"] = tool_args.get("filters", {})
             state["booking_status"] = "completed"
-
-            # Store only driver IDs
             state["driver_ids_notified"] = output.get("driver_ids", [])
 
             logger.info(f"  ✅ State Updated:")
             logger.info(f"     - Trip ID: {state['trip_id']}")
-            logger.info(f"     - Drivers Notified: {len(state['driver_ids_notified'])} driver IDs stored")
+            logger.info(f"     - Drivers Notified: {len(state['driver_ids_notified'])}")
             logger.info(f"     - Applied Filters: {state['applied_filters']}")
             logger.info(f"     - Booking Status: {state['booking_status']}")
-
-
-def process_filter_values(filters: Dict[str, Any]) -> Dict[str, Any]:
-    """Legacy function - use validate_and_fix_filters instead"""
-    return validate_and_fix_filters(filters)
