@@ -22,28 +22,41 @@ logger = logging.getLogger(__name__)
 tools = [create_trip_and_check_availability]
 
 # Initialize LLM
-llm = ChatVertexAI(model="gemini-2.0-flash", temperature=0.7)
+llm = ChatVertexAI(model="gemini-2.5-flash", temperature=1)
 llm_with_tools = llm.bind_tools(tools)
 
 
 def is_driver_query(message: str) -> bool:
-    """Check if the message is from a driver looking for duty/rides"""
+    """Check if the message is from a driver looking for duty/rides - STRICTER CHECK"""
     message_lower = message.lower()
 
-    # Driver-specific keywords
-    driver_indicators = [
+    # STRICT driver-specific keywords - must be very clear driver intent
+    strict_driver_indicators = [
         "i need duty", "i want duty", "duty chahiye", "duty milegi",
-        "i want to ride", "i want ride", "ride chahiye",
         "driver hun", "driver hoon", "i am driver", "i'm a driver",
-        "duty from", "duty to", "ride from", "ride to",
-        "koi duty", "any duty", "duty available",
-        "partner", "i drive", "main driver"
+        "i am a partner", "i'm a partner", "partner hun",
+        "duty from", "duty to", "koi duty", "any duty",
+        "duty available", "passenger chahiye", "i need passengers",
+        "i drive for", "main driver", "i am cab driver"
     ]
 
-    # Check if any driver indicator is present
-    for indicator in driver_indicators:
+    # Check if any strict driver indicator is present
+    for indicator in strict_driver_indicators:
         if indicator in message_lower:
             return True
+
+    # EXCLUDE customer phrases - if these are present, it's NOT a driver
+    customer_indicators = [
+        "i need a ride", "i want a ride", "book a ride", "need a cab",
+        "i need a cab", "i want a cab", "book a cab", "need taxi",
+        "i need to go", "i want to go", "i have to travel",
+        "pick me", "drop me", "i am traveling", "i'm traveling"
+    ]
+
+    # If any customer indicator is present, it's definitely NOT a driver
+    for indicator in customer_indicators:
+        if indicator in message_lower:
+            return False
 
     return False
 
@@ -65,6 +78,32 @@ def detect_language(message: str) -> str:
         return "english"
     else:
         return "english"  # default
+
+
+def check_if_trip_details_changed(state: Dict[str, Any], extracted: Dict[str, Any]) -> bool:
+    """Check if core trip details have changed"""
+    # Check if any core trip detail has changed
+    if extracted.get("pickup_city") and state.get("pickup_location"):
+        if extracted["pickup_city"].lower() != state["pickup_location"].lower():
+            logger.info(f"  🔄 Pickup location changed: {state['pickup_location']} → {extracted['pickup_city']}")
+            return True
+
+    if extracted.get("drop_city") and state.get("drop_location"):
+        if extracted["drop_city"].lower() != state["drop_location"].lower():
+            logger.info(f"  🔄 Drop location changed: {state['drop_location']} → {extracted['drop_city']}")
+            return True
+
+    if extracted.get("trip_type") and state.get("trip_type"):
+        if extracted["trip_type"] != state["trip_type"]:
+            logger.info(f"  🔄 Trip type changed: {state['trip_type']} → {extracted['trip_type']}")
+            return True
+
+    if extracted.get("start_date") and state.get("start_date"):
+        if extracted["start_date"] != state["start_date"]:
+            logger.info(f"  🔄 Date changed: {state['start_date']} → {extracted['start_date']}")
+            return True
+
+    return False
 
 
 def infer_vehicle_from_context(message: str, current_filters: Dict[str, Any]) -> Dict[str, Any]:
@@ -270,6 +309,14 @@ def extract_trip_details_from_message(message: str, current_date: str) -> Dict[s
         preferences["isPetAllowed"] = True
     if any(word in message_lower for word in ["verified", "certified"]):
         preferences["verified"] = True
+    if any(word in message_lower for word in ["non-smoker", "nonsmoker", "no smoking"]):
+        preferences["non_smoker"] = True
+    if "smoker" in message_lower and "non" not in message_lower:
+        preferences["smoker"] = True
+
+    # Check for "more drivers" or "additional drivers" requests
+    if any(phrase in message_lower for phrase in ["more drivers", "additional drivers", "other drivers", "more options"]):
+        preferences["request_more_drivers"] = True
 
     if preferences:
         if "inferred_filters" in extracted:
@@ -301,7 +348,7 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # Get chat history
     chat_history = state.get("chat_history", [])
 
-    # Check for driver queries first
+    # Check for driver queries first - STRICTER CHECK
     if chat_history and isinstance(chat_history[-1], HumanMessage):
         user_message = chat_history[-1].content
 
@@ -321,31 +368,61 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "tool_calls": [],
             }
 
-    # Process current message for all details
     if chat_history and isinstance(chat_history[-1], HumanMessage):
         current_message = chat_history[-1].content
+        message_lower = current_message.lower()
+
+        # Handle common questions about car details
+        if any(phrase in message_lower for phrase in [
+            "which car will come", "what car will come", "which vehicle",
+            "car details", "driver details", "who will pick",
+            "which driver", "driver name", "car number"
+        ]):
+            response = "Once drivers accept your request, you'll receive their details including name, car model, and pricing. You can then call them directly to discuss further details and confirm your booking."
+            return {
+                **state,
+                "chat_history": chat_history + [AIMessage(content=response)],
+                "last_bot_response": response,
+                "tool_calls": [],
+            }
 
         # Extract all details from current message
         extracted = extract_trip_details_from_message(current_message, current_date_str)
 
+        # Check if trip details have changed (requires new trip)
+        trip_changed = check_if_trip_details_changed(state, extracted)
+
+        # If trip changed, reset the trip ID and booking status
+        if trip_changed:
+            logger.info("  🔄 Trip details changed - will create new trip")
+            state["trip_id"] = None
+            state["booking_status"] = None
+            state["driver_ids_notified"] = []
+
+        # Handle "more drivers" request when trip already exists
+        if extracted.get("inferred_filters", {}).get("request_more_drivers") and state.get("trip_id") and state.get("booking_status") == "completed":
+            logger.info("  📋 User requesting more drivers for existing trip")
+            # Don't reset trip, just update preferences flag
+            extracted["inferred_filters"]["fetch_more_drivers"] = True
+
         # Update state with extracted details
-        if extracted.get("pickup_city") and not state.get("pickup_location"):
+        if extracted.get("pickup_city") and (not state.get("pickup_location") or trip_changed):
             state["pickup_location"] = extracted["pickup_city"]
             logger.info(f"  Setting pickup: {extracted['pickup_city']}")
 
-        if extracted.get("drop_city") and not state.get("drop_location"):
+        if extracted.get("drop_city") and (not state.get("drop_location") or trip_changed):
             state["drop_location"] = extracted["drop_city"]
             logger.info(f"  Setting drop: {extracted['drop_city']}")
 
-        if extracted.get("trip_type") and not state.get("trip_type"):
+        if extracted.get("trip_type") and (not state.get("trip_type") or trip_changed):
             state["trip_type"] = extracted["trip_type"]
             logger.info(f"  Setting trip type: {extracted['trip_type']}")
 
-        if extracted.get("start_date") and not state.get("start_date"):
+        if extracted.get("start_date") and (not state.get("start_date") or trip_changed):
             state["start_date"] = extracted["start_date"]
             logger.info(f"  Setting date: {extracted['start_date']}")
 
-        # Update filters
+        # Update filters (merge with existing)
         if extracted.get("inferred_filters"):
             existing_filters = state.get("applied_filters", {})
             merged_filters = {**existing_filters, **extracted["inferred_filters"]}
@@ -355,9 +432,28 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # Build enhanced prompt with smart rules
     applied_filters_str = json.dumps(state.get('applied_filters', {}))
 
-    enhanced_prompt = bot_prompt.format(current_date=current_date_str) + f"""
+    # The comprehensive list of preferences users can choose
+    preferences_list = """ Sedan, SUV, Punjabi-speaking, Gujarati-speaking, under 30, 10+ yrs experience, married, or pet-friendly."""
+
+    enhanced_prompt = bot_prompt.format(
+        current_date=current_date_str,
+        preferences_list=preferences_list
+    ) + f"""
 
 ## ULTRA-SMART BOOKING RULES:
+
+### CRITICAL: PREFERENCE COMMUNICATION
+**ALWAYS tell users what preferences they can choose from:**
+When asking about preferences, ALWAYS use this format:
+"Do you have any specific preferences — like {preferences_list}?"
+
+Never just ask "Any preferences?" without listing options!
+
+### TRIP CHANGE DETECTION:
+- Trip ID exists: {state.get('trip_id')}
+- Booking completed: {state.get('booking_status') == 'completed'}
+- If trip details changed (pickup/drop/date/type), create NEW trip
+- If only preferences changed, use EXISTING trip and fetch more drivers
 
 ### MINIMIZE QUESTIONS - MAXIMIZE EFFICIENCY:
 1. **NEVER ask for information already provided** - Check state for pickup, drop, date, trip type
@@ -381,8 +477,7 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 **FOR 1-4 PASSENGERS OR NO COUNT:**
 - DON'T ask "which vehicle type"
-- Instead ask naturally: "Any preferences for the trip?" or "Any specific requirements?"
-- Let them mention if they want specific vehicle, else proceed with their response
+- Instead ask naturally with preference options listed
 
 ### SMART CONVERSATION FLOW:
 
@@ -391,10 +486,12 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 - Drop: {state.get('drop_location', 'Not set')}
 - Date: {state.get('start_date', 'Not set')}
 - Trip Type: {state.get('trip_type', 'Not set')}
+- Trip ID: {state.get('trip_id', 'Not created yet')}
+- Booking Status: {state.get('booking_status', 'Not started')}
 - Filters: {applied_filters_str}
 
 **Response Strategy:**
-1. If ALL critical info available (pickup, drop, date) → Jump to preferences
+1. If ALL critical info available (pickup, drop, date) → Jump to preferences WITH OPTIONS
 2. If SOME info missing → Ask ONLY for missing info in one natural question
 3. If vehicle auto-selected → Mention it casually, don't make it a big deal
 4. Keep responses short, natural, and contextual
@@ -402,36 +499,55 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 ### NATURAL LANGUAGE PATTERNS:
 
 **When everything is provided:**
-"Perfect! [Optional: mention auto-selected vehicle if 5+ passengers]. Any specific preferences or requirements for your trip?"
+"Perfect! [Optional: mention auto-selected vehicle if 5+ passengers]. Do you have any specific preferences — like {preferences_list}?"
 
 **When asking for missing info (examples):**
 - Missing date only: "When would you like to travel?"
 - Missing date + trip type: "When are you planning to travel, and will it be one-way or round trip?"
 - Missing pickup: "Where will you be starting from?"
 
+**After booking completion:**
+NEVER say "I have notified 25 drivers"
+Instead say: "I'm connecting with drivers for prices and availability. You'll start receiving driver details with prices shortly. This may take a few minutes."
+
 **NEVER say things like:**
 - "I can help you book" (when they already asked for booking)
 - "Where would you like to travel from and to?" (when already provided)
-- "Which vehicle type would you prefer?" (deduce it or ask preferences generally)
+- "Which vehicle type would you prefer?" (deduce it or ask preferences generally WITH OPTIONS)
+- "I have sent request to X drivers" (too technical)
 
 ### PREFERENCE COLLECTION:
 
 **Smart preference ask (after getting trip details):**
 - For 5+ passengers with auto-selected vehicle:
-  "I'll arrange a [vehicle type] for your group. Any other preferences like language or specific requirements?"
+  "I'll arrange a [vehicle type] for your group. Do you have any other preferences — like {preferences_list}?"
 
 - For 1-4 passengers or no count:
-  "Any specific preferences for your trip?" (let them mention what they want)
+  "Do you have any specific preferences — like {preferences_list}?"
 
 - When they say "no preferences":
   Immediately proceed with booking, don't ask again
+
+### HANDLING MORE DRIVERS REQUEST:
+- If user asks for more drivers AFTER booking is complete
+- Check if trip details are same
+- If same, fetch more drivers with updated preferences
+- this time make sure to update the page number by 1 ex: previous page was 1 so now it should be 2
+    otherwise it will refetch same drivers and send them same request again
+- Say: "I'll connect with additional drivers based on your preferences. You'll receive more options shortly."
 
 ### CRITICAL: ALWAYS INCLUDE FILTERS IN TOOL CALL
 Current filters in state: {applied_filters_str}
 - If vehicle was auto-selected or mentioned, MUST include in tool call
 - Merge state filters with any new preferences before calling tool
+- If fetching more drivers for same trip, include "fetch_more_drivers": true flag
 
-Remember: Be smart, efficient, and natural. Every extra question is friction - minimize it!
+### CUSTOMER VS DRIVER DETECTION:
+- Be VERY careful - "I need a ride" = CUSTOMER, not driver
+- Only treat as driver if they say "I need duty" or "I need passengers"
+- Default assumption: Always treat as customer unless explicitly driver language
+
+Remember: Be smart, efficient, and natural. Every extra question is friction - minimize it! Always list preference options when asking!
 """
 
     # Build messages for LLM
@@ -535,15 +651,15 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             # Update state based on tool output
             update_state_from_tool_output(tool_name, output, prepared_args, state_updates)
 
-            # Format output for LLM
+            # Format output for LLM - ENHANCED MESSAGE
             if tool_name == "create_trip_and_check_availability":
                 if output.get("status") == "success":
+                    # Don't mention number of drivers
                     output_str = json.dumps({
                         "status": "success",
-                        "message": output.get("message"),
+                        "message": "I'm connecting with drivers for prices and availability. You'll start receiving driver details with prices shortly. This may take a few minutes.",
                         "trip_id": output.get("trip_id"),
-                        "drivers_notified": output.get("drivers_notified", 0),
-                        "details": "Drivers are being notified based on preferences"
+                        "booking_confirmed": True
                     })
                     logger.info(f"✅ SUCCESS: Trip {output.get('trip_id')} created, {output.get('drivers_notified')} drivers notified")
                 else:
@@ -577,11 +693,23 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dict) -> Dict[str, Any]:
-    """Prepare tool arguments with smart filter merging"""
+    """Prepare tool arguments with smart filter merging and trip management"""
     logger.info("\n🔧 Preparing tool arguments...")
     args = tool_args.copy()
 
     if tool_name == "create_trip_and_check_availability":
+        # Check if we should reuse existing trip
+        if state.get("trip_id") and state.get("booking_status") == "completed":
+            # Check if core trip details match
+            if (args.get("pickup_city") == state.get("pickup_location") and
+                args.get("drop_city") == state.get("drop_location") and
+                args.get("trip_type") == state.get("trip_type") and
+                args.get("start_date") == state.get("start_date")):
+
+                logger.info(f"  ♻️ Reusing existing trip ID: {state['trip_id']}")
+                args["existing_trip_id"] = state["trip_id"]
+                args["fetch_more_drivers"] = True
+
         # Add customer details from state
         customer_details = {
             "id": state.get("customer_id"),
@@ -605,7 +733,7 @@ def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dic
         if state_filters:
             logger.info(f"  🎯 State filters: {state_filters}")
             for key, value in state_filters.items():
-                if key not in ['auto_inferred', 'passenger_count', 'needs_clarification', 'explicit_vehicle']:
+                if key not in ['auto_inferred', 'passenger_count', 'needs_clarification', 'explicit_vehicle', 'request_more_drivers', 'fetch_more_drivers']:
                     merged_filters[key] = value
 
         # Add tool filters (from LLM)
@@ -650,7 +778,8 @@ def validate_and_fix_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
     boolean_fields = [
         'married', 'isPetAllowed', 'verified', 'profileVerified',
         'allowHandicappedPersons', 'availableForCustomersPersonalCar',
-        'availableForDrivingInEventWedding', 'availableForPartTimeFullTime'
+        'availableForDrivingInEventWedding', 'availableForPartTimeFullTime',
+        'non_smoker', 'smoker'
     ]
 
     for field in boolean_fields:
@@ -701,18 +830,28 @@ def update_state_from_tool_output(
     if tool_name == "create_trip_and_check_availability":
         if output.get("status") == "success":
             # Store trip details
-            state["trip_id"] = output.get("trip_id")
-            state["pickup_location"] = tool_args.get("pickup_city")
-            state["drop_location"] = tool_args.get("drop_city")
-            state["trip_type"] = tool_args.get("trip_type")
-            state["start_date"] = tool_args.get("start_date")
-            state["end_date"] = tool_args.get("return_date") or tool_args.get("start_date")
+            if output.get("trip_id"):
+                state["trip_id"] = output.get("trip_id")
+                state["pickup_location"] = tool_args.get("pickup_city")
+                state["drop_location"] = tool_args.get("drop_city")
+                state["trip_type"] = tool_args.get("trip_type")
+                state["start_date"] = tool_args.get("start_date")
+                state["end_date"] = tool_args.get("return_date") or tool_args.get("start_date")
+
+            # Always update filters and status
             state["applied_filters"] = tool_args.get("filters", {})
             state["booking_status"] = "completed"
-            state["driver_ids_notified"] = output.get("driver_ids", [])
+
+            # Append new driver IDs if fetching more
+            new_driver_ids = output.get("driver_ids", [])
+            if tool_args.get("fetch_more_drivers"):
+                existing_ids = state.get("driver_ids_notified", [])
+                state["driver_ids_notified"] = existing_ids + new_driver_ids
+            else:
+                state["driver_ids_notified"] = new_driver_ids
 
             logger.info(f"  ✅ State Updated:")
             logger.info(f"     - Trip ID: {state['trip_id']}")
-            logger.info(f"     - Drivers Notified: {len(state['driver_ids_notified'])}")
+            logger.info(f"     - Total Drivers Notified: {len(state['driver_ids_notified'])}")
             logger.info(f"     - Applied Filters: {state['applied_filters']}")
             logger.info(f"     - Booking Status: {state['booking_status']}")

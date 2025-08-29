@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 def get_driver_ids(
     city: str,
     limit: int = config.DRIVERS_PER_FETCH,
+    page: int = 1,
     filters: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """
@@ -23,6 +24,7 @@ def get_driver_ids(
     Args:
         city: City to search for drivers
         limit: Number of drivers to fetch
+        page: Page number to fetch
         filters: Optional filters to apply (already processed for API)
 
     Returns:
@@ -36,13 +38,13 @@ def get_driver_ids(
         # Start with base parameters
         params = {
             "city": city,
-            "page": 1,
+            "page": page,
             "limit": limit,
         }
 
         # Add filters if provided
         if filters:
-            logger.info(f"  🎯 Applying Filters to API Request:")
+            logger.info("  🎯 Applying Filters to API Request:")
 
             # CRITICAL: The filters are already processed and should be added directly to params
             # Don't modify boolean values here as they should already be strings

@@ -1,8 +1,9 @@
 # langgraph_agent/tools/drivers_tools.py
-"""Fixed driver tools with proper filter handling for preferences"""
+"""Enhanced driver tools with better trip management and user messaging"""
 
 import logging
-from typing import Dict, Any, Optional, List
+import re
+from typing import Dict, Any, Optional
 from langchain_core.tools import tool
 from datetime import datetime, timezone
 from services import api_client
@@ -22,9 +23,12 @@ def create_trip_and_check_availability(
     start_date: str,
     return_date: Optional[str] = None,
     filters: Optional[Dict[str, Any]] = None,
+    existing_trip_id: Optional[str] = None,
+    fetch_more_drivers: bool = False,
+    page: int = 1,
 ) -> Dict[str, Any]:
     """
-    Creates a trip and immediately checks driver availability based on preferences.
+    Creates a trip OR reuses existing trip, then checks driver availability based on preferences.
     Only returns driver IDs, not full driver details.
 
     Args:
@@ -35,102 +39,135 @@ def create_trip_and_check_availability(
         start_date: The start date for the trip, in YYYY-MM-DD format
         return_date: (Optional) The return date for a round-trip, in YYYY-MM-DD format
         filters: (Optional) Driver preferences/filters - properly formatted for API
+        existing_trip_id: (Optional) If provided, reuse this trip ID instead of creating new
+        fetch_more_drivers: (Optional) If True, fetching additional drivers for existing trip
+        page: Page number for pagination, have to pass when getting driver_ids
 
     Returns:
         Dictionary with operation status and driver IDs
     """
     logger.info("="*50)
-    logger.info("STARTING TRIP CREATION AND AVAILABILITY CHECK")
+    if fetch_more_drivers:
+        logger.info("FETCHING MORE DRIVERS FOR EXISTING TRIP")
+    else:
+        logger.info("STARTING TRIP CREATION AND AVAILABILITY CHECK")
+
     logger.info(f"Route: {pickup_city} to {drop_city}")
     logger.info(f"Trip Type: {trip_type}")
     logger.info(f"Customer: {customer_details.get('name')} (ID: {customer_details.get('id')})")
     logger.info(f"Raw Filters Received: {filters}")
+
+    if existing_trip_id:
+        logger.info(f"♻️ Reusing existing trip: {existing_trip_id}")
+
     logger.info("="*50)
 
-    # STEP 1: CREATE THE TRIP
-    logger.info("\n📝 STEP 1: Creating Trip...")
+    # STEP 1: CREATE OR REUSE TRIP
+    if existing_trip_id and fetch_more_drivers:
+        # Reuse existing trip
+        logger.info(f"\n♻️ STEP 1: Reusing Existing Trip ID: {existing_trip_id}")
+        trip_id = existing_trip_id
+    else:
+        # Create new trip
+        logger.info("\n📝 STEP 1: Creating New Trip...")
 
-    def format_date_for_api(date_str):
-        """Convert YYYY-MM-DD to ISO format with current time"""
-        try:
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
-            current_time = datetime.now(timezone.utc)
-            dt_with_time = datetime(
-                dt.year, dt.month, dt.day,
-                current_time.hour, current_time.minute, current_time.second,
-                tzinfo=timezone.utc
-            )
-            formatted = dt_with_time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-            return formatted
-        except (ValueError, TypeError) as e:
-            logger.error(f"  ❌ Error parsing date {date_str}: {e}")
-            return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+        def format_date_for_api(date_str):
+            """Convert YYYY-MM-DD to ISO format with current time"""
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                current_time = datetime.now(timezone.utc)
+                dt_with_time = datetime(
+                    dt.year, dt.month, dt.day,
+                    current_time.hour, current_time.minute, current_time.second,
+                    tzinfo=timezone.utc
+                )
+                formatted = dt_with_time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+                return formatted
+            except (ValueError, TypeError) as e:
+                logger.error(f"  ❌ Error parsing date {date_str}: {e}")
+                return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
-    # Format dates for API
-    formatted_start_date = format_date_for_api(start_date)
+        # Format dates for API
+        formatted_start_date = format_date_for_api(start_date)
 
-    if trip_type.lower() == "round-trip":
-        if not return_date:
-            logger.error("  ❌ Return date missing for round-trip")
+        if trip_type.lower() == "round-trip":
+            if not return_date:
+                logger.error("  ❌ Return date missing for round-trip")
+                return {
+                    "status": "error",
+                    "message": "Return date is required for a round-trip."
+                }
+            formatted_end_date = format_date_for_api(return_date)
+        else:
+            formatted_end_date = formatted_start_date
+
+        # Call trip creation API
+        trip_data = api_client.create_trip(
+            customer_details,
+            pickup_city,
+            drop_city,
+            trip_type.lower(),
+            formatted_start_date,
+            formatted_end_date
+        )
+
+        if not trip_data or "tripId" not in trip_data:
+            logger.error("  ❌ TRIP CREATION FAILED")
             return {
                 "status": "error",
-                "message": "Return date is required for a round-trip."
+                "message": "Failed to create the trip. Please try again."
             }
-        formatted_end_date = format_date_for_api(return_date)
-    else:
-        formatted_end_date = formatted_start_date
 
-    # Call trip creation API
-    trip_data = api_client.create_trip(
-        customer_details,
-        pickup_city,
-        drop_city,
-        trip_type.lower(),
-        formatted_start_date,
-        formatted_end_date
-    )
-
-    if not trip_data or "tripId" not in trip_data:
-        logger.error("  ❌ TRIP CREATION FAILED")
-        return {
-            "status": "error",
-            "message": "Failed to create the trip. Please try again."
-        }
-
-    trip_id = trip_data.get("tripId")
-    logger.info(f"  ✅ TRIP CREATED: {trip_id}")
+        trip_id = trip_data.get("tripId")
+        logger.info(f"  ✅ NEW TRIP CREATED: {trip_id}")
 
     # STEP 2: PROCESS FILTERS PROPERLY
-    logger.info(f"\n🔧 STEP 2: Processing Filters...")
+    logger.info("\n🔧 STEP 2: Processing Filters...")
 
-    # Process filters using the new comprehensive function
+    # Process filters using the comprehensive function
     processed_filters = process_filters_for_api(filters) if filters else {}
 
     logger.info(f"  Processed Filters for API: {processed_filters}")
 
     # STEP 3: GET DRIVER IDS BASED ON FILTERS
-    logger.info(f"\n🚗 STEP 3: Fetching Driver IDs from {pickup_city}...")
+    if fetch_more_drivers:
+        logger.info(f"\n🚗 STEP 3: Fetching ADDITIONAL Driver IDs from {pickup_city}...")
+    else:
+        logger.info(f"\n🚗 STEP 3: Fetching Driver IDs from {pickup_city}...")
 
     # Fetch only driver IDs (not full details)
     driver_ids = api_client.get_driver_ids(
         pickup_city,
         config.DRIVERS_PER_FETCH,
-        processed_filters
+        page,
+        processed_filters,
     )
 
     if not driver_ids:
-        logger.warning(f"  ⚠️ NO DRIVERS FOUND for {pickup_city}")
-        return {
-            "status": "partial_success",
-            "message": "Trip created but no drivers available currently matching your preferences.",
-            "trip_id": trip_id,
-            "driver_ids": []
-        }
+        if fetch_more_drivers:
+            logger.warning(f"  ⚠️ NO ADDITIONAL DRIVERS FOUND for {pickup_city}")
+            return {
+                "status": "partial_success",
+                "message": "No additional drivers available currently matching your updated preferences.",
+                "trip_id": trip_id,
+                "driver_ids": []
+            }
+        else:
+            logger.warning(f"  ⚠️ NO DRIVERS FOUND for {pickup_city}")
+            return {
+                "status": "partial_success",
+                "message": "Trip created but no drivers available currently matching your preferences.",
+                "trip_id": trip_id,
+                "driver_ids": []
+            }
 
     logger.info(f"  ✅ Found {len(driver_ids)} drivers matching filters")
 
     # STEP 4: SEND AVAILABILITY REQUEST
-    logger.info(f"\n📤 STEP 4: Sending Availability Requests to {len(driver_ids)} drivers...")
+    if fetch_more_drivers:
+        logger.info(f"\n📤 STEP 4: Sending Availability Requests to {len(driver_ids)} ADDITIONAL drivers...")
+    else:
+        logger.info(f"\n📤 STEP 4: Sending Availability Requests to {len(driver_ids)} drivers...")
 
     # Prepare trip details for availability check
     trip_details = {
@@ -143,6 +180,11 @@ def create_trip_and_check_availability(
     }
 
     # Send availability request
+    if trip_id is None:
+        return {
+            "status": "error",
+            "message": "Trip ID is missing."
+        }
     availability_response = api_client.send_availability_request(
         trip_id,
         driver_ids,
@@ -162,18 +204,30 @@ def create_trip_and_check_availability(
 
     logger.info("  ✅ AVAILABILITY REQUESTS SENT")
     logger.info("="*50)
-    logger.info("COMPLETED: TRIP CREATED AND DRIVERS NOTIFIED")
+
+    if fetch_more_drivers:
+        logger.info("COMPLETED: ADDITIONAL DRIVERS NOTIFIED")
+    else:
+        logger.info("COMPLETED: TRIP CREATED AND DRIVERS NOTIFIED")
+
     logger.info(f"Trip ID: {trip_id}")
     logger.info(f"Drivers Notified: {len(driver_ids)}")
     logger.info("="*50)
 
+    # Return user-friendly message without mentioning driver count
+    if fetch_more_drivers:
+        user_message = "I'm connecting with additional drivers based on your preferences. You'll receive more options shortly."
+    else:
+        user_message = "I'm connecting with drivers for prices and availability. You'll start receiving driver details with prices shortly. This may take a few minutes."
+
     return {
         "status": "success",
-        "message": "I have notified drivers matching your preferences. You'll receive their quotations shortly.",
+        "message": user_message,
         "trip_id": trip_id,
-        "drivers_notified": len(driver_ids),
+        "drivers_notified": len(driver_ids),  # For internal logging only
         "driver_ids": driver_ids,  # Return only IDs
-        "filters_applied": bool(filters)
+        "filters_applied": bool(filters),
+        "fetch_more_drivers": fetch_more_drivers
     }
 
 
