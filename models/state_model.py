@@ -38,6 +38,8 @@ class ConversationState(BaseModel):
     booking_status: Optional[str] = None
     driver_ids_notified: List[str] = Field(default_factory=list)
 
+    current_page: int = 1
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for graph state"""
         return {
@@ -57,6 +59,7 @@ class ConversationState(BaseModel):
             "tool_calls": self.tool_calls,
             "booking_status": self.booking_status,
             "driver_ids_notified": self.driver_ids_notified,
+            "current_page": self.current_page,
         }
 
     @classmethod
@@ -77,4 +80,5 @@ class ConversationState(BaseModel):
         self.last_bot_response = None
         self.tool_calls = []
         self.booking_status = None
-        self.driver_ids_notified = []
+        self.driver_ids_notified = [],
+        self.current_page = 1

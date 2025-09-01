@@ -4,7 +4,7 @@
 import json
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from datetime import datetime, timedelta
 
 from langchain_core.messages import SystemMessage, ToolMessage, AIMessage, HumanMessage
@@ -12,7 +12,6 @@ from langchain_google_vertexai import ChatVertexAI
 
 from langgraph_agent.graph.sys_prompt import bot_prompt
 from langgraph_agent.tools.drivers_tools import create_trip_and_check_availability
-import config
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -675,7 +674,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             logger.error(f"❌ Error executing tool {tool_name}: {e}", exc_info=True)
             tool_messages.append(
                 ToolMessage(
-                    content=f"Error: Failed to process your request. Please try again.",
+                    content="Error: Failed to process your request. Please try again.",
                     tool_call_id=tool_id,
                     name=tool_name,
                 )
@@ -709,6 +708,11 @@ def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dic
                 logger.info(f"  ♻️ Reusing existing trip ID: {state['trip_id']}")
                 args["existing_trip_id"] = state["trip_id"]
                 args["fetch_more_drivers"] = True
+
+                current_page = state.get("current_page", 1)
+                next_page = current_page + 1
+                args["page"] = next_page
+                logger.info(f"  📖 Incrementing page: {current_page} → {next_page}")
 
         # Add customer details from state
         customer_details = {
@@ -842,6 +846,14 @@ def update_state_from_tool_output(
             state["applied_filters"] = tool_args.get("filters", {})
             state["booking_status"] = "completed"
 
+            if tool_args.get("fetch_more_drivers"):
+                page_used = tool_args.get("page", 1)
+                state["current_page"] = page_used
+                logger.info(f"  📖 Updated current page to: {page_used}")
+            else:
+                # Reset page for new trip
+                state["current_page"] = 1
+
             # Append new driver IDs if fetching more
             new_driver_ids = output.get("driver_ids", [])
             if tool_args.get("fetch_more_drivers"):
@@ -850,8 +862,9 @@ def update_state_from_tool_output(
             else:
                 state["driver_ids_notified"] = new_driver_ids
 
-            logger.info(f"  ✅ State Updated:")
+            logger.info("  ✅ State Updated:")
             logger.info(f"     - Trip ID: {state['trip_id']}")
+            logger.info(f"     - Current Page: {state['current_page']}")
             logger.info(f"     - Total Drivers Notified: {len(state['driver_ids_notified'])}")
             logger.info(f"     - Applied Filters: {state['applied_filters']}")
             logger.info(f"     - Booking Status: {state['booking_status']}")

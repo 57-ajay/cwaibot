@@ -25,6 +25,7 @@ class GraphState(TypedDict, total=False):
     tool_calls: List[Dict[str, Any]]
     booking_status: Optional[str]
     driver_ids_notified: List[str]  # Only driver IDs
+    current_page: int
 
 
 # Import and wrap node functions

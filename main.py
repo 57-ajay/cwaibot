@@ -223,6 +223,8 @@ async def process_message_async(user_id: str, message: str, customer_details: di
             state_model.booking_status = result.get("booking_status")
         if result.get("driver_ids_notified") is not None:
             state_model.driver_ids_notified = result.get("driver_ids_notified")
+        if result.get("current_page") is not None:
+            state_model.current_page = result.get("current_page")
 
         # Save updated state to Redis
         await save_user_state(user_id, state_model)
@@ -275,9 +277,18 @@ async def chat_with_bot(chat_request: ChatRequest):
         customer_details
     )
 
+    has_sent_availabilityRequest = False
+    message = "I'm connecting with drivers for prices and availability. You'll start receiving driver details with prices shortly. This may take a few minutes."
+
+    partial_message = "prices and availability"
+
+    if message.lower() in response.lower() or partial_message.lower() in response.lower():
+        has_sent_availabilityRequest = True
+
     return {
         "type": "text",
-        "response": response
+        "response": response,
+        "has_sent_availabilityRequest": has_sent_availabilityRequest
     }
 
 

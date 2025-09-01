@@ -182,6 +182,7 @@ class AsyncRedisSessionManager:
             "tool_calls": state.tool_calls,
             "booking_status": state.booking_status,
             "driver_ids_notified": state.driver_ids_notified,  # Only driver IDs
+             "current_page": state.current_page,
             "last_activity": datetime.now().isoformat(),
         }
 
@@ -214,7 +215,8 @@ class AsyncRedisSessionManager:
             last_bot_response=state_dict.get("last_bot_response"),
             tool_calls=state_dict.get("tool_calls", []),
             booking_status=state_dict.get("booking_status"),
-            driver_ids_notified=state_dict.get("driver_ids_notified", [])
+            driver_ids_notified=state_dict.get("driver_ids_notified", []),
+            current_page=state_dict.get("current_page", 1)
         )
 
         return state
