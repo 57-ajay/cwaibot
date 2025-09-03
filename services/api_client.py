@@ -1,5 +1,4 @@
 # services/api_client.py
-"""API client with LLM-powered price estimation and improved trip creation reliability"""
 
 import requests
 from typing import List, Dict, Any, Optional
@@ -10,157 +9,6 @@ import config
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Base pricing per km for different vehicle types
-VEHICLE_BASE_RATES = {
-    "hatchback": {"min": 12, "max": 16},
-    "sedan": {"min": 14, "max": 18},
-    "suv": {"min": 16, "max": 22},
-    "innova": {"min": 16, "max": 24},
-    "innova_crysta": {"min": 18, "max": 26},
-    "tempoTraveller12Seater": {"min": 22, "max": 30},
-    "tempo_traveller": {"min": 22, "max": 30}
-}
-
-def estimate_distance_with_llm(pickup_city: str, drop_city: str) -> float:
-    """
-    Use LLM to estimate distance between two cities
-    Returns distance in kilometers
-    """
-    from langchain_google_vertexai import ChatVertexAI
-    from langchain_core.messages import HumanMessage
-
-    try:
-        # Initialize LLM
-        llm = ChatVertexAI(model="gemini-2.5-flash", temperature=0.5)
-
-        # Create prompt for distance estimation
-        prompt = f"""
-        Estimate the road distance between {pickup_city} and {drop_city} in India.
-
-        Instructions:
-        - Provide ONLY the distance number in kilometers
-        - Consider actual road/highway routes, not straight-line distance
-        - Be realistic about Indian road conditions and routes
-        - If cities are in the same state, consider intrastate routes
-        - If cities are in different states, consider interstate highway routes
-        - Return only a number (e.g., 285) - no text, no units
-
-        Examples:
-        Delhi to Jaipur: 280
-        Mumbai to Pune: 150
-        Bangalore to Chennai: 350
-
-        Distance from {pickup_city} to {drop_city}:
-        """
-
-        response = llm.invoke([HumanMessage(content=prompt)])
-
-        # Extract distance from response
-        distance_text = response.content.strip()
-
-        # Parse the distance
-        try:
-            # Extract number from response
-            import re
-            numbers = re.findall(r'\d+', distance_text)
-            if numbers:
-                distance = float(numbers[0])
-                logger.info(f"  🤖 LLM estimated distance {pickup_city} to {drop_city}: {distance} km")
-                return distance
-            else:
-                logger.warning(f"  ⚠️ Could not parse distance from LLM response: {distance_text}")
-                return 200.0  # Default fallback
-        except (ValueError, IndexError):
-            logger.warning(f"  ⚠️ Error parsing LLM distance response: {distance_text}")
-            return 200.0  # Default fallback
-
-    except Exception as e:
-        logger.error(f"  ❌ Error getting distance from LLM: {e}")
-        # Fallback: estimate based on city names if possible
-        return estimate_distance_fallback(pickup_city, drop_city)
-
-def estimate_distance_fallback(pickup_city: str, drop_city: str) -> float:
-    """
-    Fallback distance estimation based on common city pairs and heuristics
-    """
-    pickup_lower = pickup_city.lower()
-    drop_lower = drop_city.lower()
-
-    # Same city
-    if pickup_lower == drop_lower:
-        return 50.0  # Local trip within city
-
-    # Common inter-city distances (just a few major ones as fallback)
-    common_distances = {
-        ("delhi", "jaipur"): 280,
-        ("jaipur", "delhi"): 280,
-        ("mumbai", "pune"): 150,
-        ("pune", "mumbai"): 150,
-        ("bangalore", "chennai"): 350,
-        ("chennai", "bangalore"): 350,
-        ("delhi", "agra"): 200,
-        ("agra", "delhi"): 200,
-        ("delhi", "chandigarh"): 250,
-        ("chandigarh", "delhi"): 250,
-    }
-
-    # Check if we have this city pair
-    city_pair = (pickup_lower, drop_lower)
-    if city_pair in common_distances:
-        return float(common_distances[city_pair])
-
-    # Heuristic: estimate based on string similarity/regions
-    # This is a very rough estimate
-    if any(state in pickup_lower or state in drop_lower for state in ["rajasthan", "jaipur", "jodhpur", "udaipur"]):
-        if any(state in pickup_lower or state in drop_lower for state in ["rajasthan", "jaipur", "jodhpur", "udaipur"]):
-            return 200.0  # Within Rajasthan
-        else:
-            return 400.0  # Inter-state from Rajasthan
-
-    # Default distance for unknown city pairs
-    logger.info(f"  🔄 Using default distance for {pickup_city} to {drop_city}")
-    return 300.0  # Conservative average for inter-city travel
-
-def calculate_estimated_prices(pickup_city: str, drop_city: str, trip_type: str = "one-way") -> Dict[str, Dict[str, int]]:
-    """
-    Calculate estimated prices for all vehicle types using LLM-powered distance estimation
-    """
-    logger.info(f"🧮 Calculating prices for {pickup_city} to {drop_city} ({trip_type})")
-
-    # Get distance estimate from LLM
-    distance = estimate_distance_with_llm(pickup_city, drop_city)
-
-    # For round trips, double the distance
-    if trip_type.lower() == "round-trip":
-        distance *= 2
-        logger.info(f"  🔄 Round trip - doubled distance: {distance} km")
-
-    logger.info(f"  📏 Final distance for pricing: {distance} km")
-
-    estimated_prices = {}
-
-    for vehicle_type, rates in VEHICLE_BASE_RATES.items():
-        min_price = int(distance * rates["min"])
-        max_price = int(distance * rates["max"])
-
-        # Add minimum fare and rounding
-        min_price = max(min_price, 1500)
-        max_price = max(max_price, 2000)
-
-        # Round to nearest 50
-        min_price = ((min_price + 24) // 50) * 50
-        max_price = ((max_price + 24) // 50) * 50
-
-        estimated_prices[vehicle_type] = {
-            "min": min_price,
-            "max": max_price
-        }
-
-    logger.info(f"  💰 Estimated prices calculated for {len(estimated_prices)} vehicle types")
-    logger.info(f"  📊 Price range: ₹{min(p['min'] for p in estimated_prices.values())} - ₹{max(p['max'] for p in estimated_prices.values())}")
-
-    return estimated_prices
 
 
 def get_driver_ids(
@@ -271,11 +119,6 @@ def create_trip(
     logger.info(f"  Customer: {customer_details.get('name')} (ID: {customer_details.get('id')})")
     logger.info(f"  Route: {pickup_city} to {drop_city}")
 
-    estimated_prices = calculate_estimated_prices(pickup_city, drop_city, trip_type)
-
-    logger.info(f"ESTIMATED PRICES: {estimated_prices}")
-
-    # Retry mechanism for improved reliability
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -296,14 +139,10 @@ def create_trip(
                 },
                 "startDate": start_date,
                 "tripType": trip_type,
-                "estimatedPrice": estimated_prices
             }
 
             if end_date:
                 payload["endDate"] = end_date
-
-            logger.info(f"  📤 Attempt {attempt + 1}/{max_retries}")
-            logger.info(f"  📊 Estimated prices included: {len(estimated_prices)} vehicle types")
 
             response = requests.post(config.CREATE_TRIP_URL, json=payload, timeout=30)
             logger.info(f"  Response Status: {response.status_code}")
