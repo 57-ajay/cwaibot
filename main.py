@@ -256,8 +256,8 @@ async def process_message_async(user_id: str, message: str, customer_details: di
         return "The booking process is taking longer than expected. Please wait a moment and I'll update you on the status."
     except Exception as e:
         logger.error(f"❌ Error processing message: {e}")
-        return "Sorry, I encountered an issue processing your request. Please try again or type 'reset' to start over."
-
+        await clear_user_session(user_id)
+        return "If I'm unable to assist, please call CabsWale Support for immediate help on +919403892230"
 
 @app.post("/chat")
 async def chat_with_bot(chat_request: ChatRequest):
