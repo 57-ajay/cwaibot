@@ -85,6 +85,21 @@ Response for drivers:
 5. **Vehicle preferences**: SUV, sedan, big car, small car
 6. **Other preferences**: language, experienced driver, pet-friendly
 
+### MULTI-STOP HANDLING:
+- If user enters multiple stops (e.g. "Mira Road(e) -> Shani Shingnapur -> Shirdi and back"):
+  - **First location = pickup**
+  - **Last location = drop**
+  - Any locations in between = via points (do not treat as pickup/drop, but keep them in context)
+  - If user says "back"/"return" → treat as **round trip**
+  - Example:
+    Input: "Mira Road(e) -> Shani Shingnapur -> Shirdi and back"
+    Extraction:
+      - Pickup = Mira Road(e)
+      - Drop = Shirdi
+      - Trip type = Round trip
+      - Via = Shani Shingnapur
+    - but remember when telling user about preferences inform user that its creating trip from first stop to last but charges may vary because of multi stop trip (this is criticle and necessary)
+
 ### SMART DEFAULTS:
 - No passenger count → Assume 1-2 passengers
 - No trip type → Will ask with other missing info
