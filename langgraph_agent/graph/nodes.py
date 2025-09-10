@@ -1,5 +1,5 @@
 # langgraph_agent/graph/nodes.py
-"""LLM-driven intelligent agent with full multilingual support"""
+"""LLM-driven intelligent agent with full multilingual support and error recovery"""
 
 import json
 import logging
@@ -27,7 +27,7 @@ llm_with_tools = llm.bind_tools(tools)
 def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     LLM-driven agent node that handles all languages and contexts naturally.
-    No hardcoded checks - everything is handled by the LLM.
+    Enhanced with error recovery and intelligent understanding.
     """
     logger.info("\n" + "="*50)
     logger.info("AGENT NODE EXECUTION")
@@ -41,12 +41,18 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(f"  - Booking Status: {state.get('booking_status')}")
     logger.info(f"  - Current Filters: {state.get('applied_filters', {})}")
     logger.info(f"  - Current Page: {state.get('current_page', 1)}")
+    logger.info(f"  - Error Count: {state.get('error_count', 0)}")
+    logger.info(f"  - Last Error: {state.get('last_error_type', 'None')}")
 
     # Get current date for context
     current_date_str = datetime.now().strftime("%Y-%m-%d")
 
     # Get chat history
     chat_history = state.get("chat_history", [])
+
+    # Check for error loops
+    error_count = state.get("error_count", 0)
+    last_error_type = state.get("last_error_type", "")
 
     # Build comprehensive prompt that handles everything
     enhanced_prompt = bot_prompt.format(
@@ -63,19 +69,24 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 - Applied Filters: {json.dumps(state.get('applied_filters', {}))}
 - Drivers Already Notified: {len(state.get('driver_ids_notified', []))}
 - Current Page: {state.get('current_page', 1)}
+- Error Count: {error_count}
+- Last Error Type: {last_error_type}
+
+## ERROR RECOVERY CONTEXT:
+{f"WARNING: Same error occurred {error_count} times. Please try a different approach or simplify the search." if error_count > 1 else ""}
+{f"CRITICAL: After {error_count} attempts, please remove complex filters and try basic search only." if error_count > 2 else ""}
 
 ## YOUR TASK:
 Analyze the user's message and determine the appropriate response. Consider:
 
 1. **Language**: Respond in the same language as the user (Hindi, Punjabi, English, etc.)
 
-2. **Intent Detection**: Understand what the user wants:
-   - Booking a cab (customer) vs. Looking for duty (driver/partner)
-   - Price negotiation or budget concerns
-   - Questions about tolls/taxes/charges
-   - Requesting more drivers
-   - General queries or clarifications
-   - Ambiguous responses like "no" (understand from context)
+2. **Intelligent Intent Detection**:
+   - "I need driver, I have car" → Customer needs driver for personal vehicle (availableForCustomersPersonalCar = true)
+   - "Driver for wedding" → Customer needs event driver (availableForDrivingInEventWedding = true)
+   - "Part time driver" → Long-term driver need (availableForPartTimeFullTime = true)
+   - "Driver for disabled" → Special needs (allowHandicappedPersons = true)
+   - NEVER say "I only handle customer bookings" for these - they ARE customer bookings!
 
 3. **Information Extraction**: Extract from ANY language:
    - Cities (pickup and drop)
@@ -83,34 +94,47 @@ Analyze the user's message and determine the appropriate response. Consider:
    - Trip type (one-way/round-trip)
    - Number of passengers
    - Vehicle preferences
+   - Special service needs (personal car, wedding, etc.)
    - Driver preferences (language, experience, etc.)
 
-4. **Smart Defaults**:
-   - 9+ passengers → Auto-select 12-seater Tempo Traveller
-   - 5-8 passengers → Auto-select SUV
-   - Don't auto-select for budget mentions
+4. **Smart Filter Mapping**:
+   - "my car"/"own vehicle" → availableForCustomersPersonalCar = true
+   - "wedding"/"shaadi" → availableForDrivingInEventWedding = true
+   - "pet"/"dog"/"cat" → isPetAllowed = true
+   - "female/male driver" → gender = "female"/"male"
+   - "married driver" → married = true
+   - "experienced" → minDrivingExperience = 5
+   - "very experienced" → minDrivingExperience = 10
+   - "verified"/"trusted" → verified = true, profileVerified = true
 
-5. **State Management**:
+5. **Error Recovery Strategy**:
+   - If error_count > 2: Simplify filters, remove complex requirements
+   - If no drivers with filters: Suggest removing some preferences
+   - If API errors: Try without filters
+   - NEVER repeat the same failed operation more than twice
+
+6. **State Management**:
    - If trip details change → Create new trip
    - If only requesting more drivers → Reuse trip, increment page
+   - Track error attempts to prevent loops
 
-6. **Tool Calling Rules**:
+7. **Tool Calling Rules**:
    - ONLY call tool when ALL trip details are available
+   - If previous attempts failed, reduce filter complexity
    - Convert filters to API format properly:
      * vehicleTypes → vehicles (comma-separated string)
      * Language preference → language (single value)
      * Booleans → "true"/"false" strings
-     * Experience → minDrivingExperience (integer)
-   - Page management: current page is {state.get('current_page', 1)}, next would be {state.get('current_page', 1) + 1}
+     * Special services → appropriate boolean flags
 
-7. **Response Templates** (adapt to user's language):
-   - Price/Budget → Negotiation template with support number
-   - Tolls/Taxes → Inclusive pricing explanation
-   - Errors → Include support number +919403892230
+8. **Response Strategy**:
+   - BE INTELLIGENT: Understand intent, not just literal words
+   - AVOID LOOPS: If stuck, try different approach
+   - MINIMIZE SUPPORT ESCALATION: Only mention support after exhausting alternatives
    - Success → Don't mention driver count
 
-Remember: You understand ALL languages. Extract information regardless of language.
-Respond naturally in the user's language. Be helpful and efficient.
+Remember: You are INTELLIGENT. Understand what users MEAN, not just what they say.
+Adapt and help rather than deflecting to support. Find creative solutions.
 """
 
     # Build messages for LLM
@@ -131,22 +155,16 @@ Respond naturally in the user's language. Be helpful and efficient.
         # Check if the response has tool_calls
         if isinstance(ai_response, AIMessage):
             if not ai_response.tool_calls:
-                # Direct response
+                # Direct response - reset error count since we're not stuck
                 logger.info("✅ Agent provided direct response")
-
-                # The LLM might have updated our understanding - let's parse it
-                response_content = ai_response.content
-
-                # Update state if LLM extracted any information
-                # The LLM will tell us what it extracted in its response
-                state_updates = extract_state_updates_from_llm_response(response_content, state)
 
                 return {
                     **state,
-                    **state_updates,
                     "chat_history": updated_history,
-                    "last_bot_response": response_content,
+                    "last_bot_response": ai_response.content,
                     "tool_calls": [],
+                    "error_count": 0,  # Reset error count on successful response
+                    "last_error_type": ""
                 }
             else:
                 # Agent wants to call tools
@@ -166,47 +184,47 @@ Respond naturally in the user's language. Be helpful and efficient.
                 "chat_history": updated_history,
                 "last_bot_response": str(ai_response.content) if hasattr(ai_response, 'content') else str(ai_response),
                 "tool_calls": [],
+                "error_count": 0,  # Reset on successful response
+                "last_error_type": ""
             }
 
     except Exception as e:
         logger.error(f"❌ Error in agent_node: {e}", exc_info=True)
-        # Let LLM handle error message in user's language
+
+        # Track error for loop prevention
+        error_count = state.get("error_count", 0) + 1
+
+        # Let LLM handle error message intelligently based on error count
         error_prompt = f"""
-        There was a technical error. Please provide an appropriate error message in the user's language.
-        Include the support number +919403892230 for assistance.
-        Be apologetic and helpful.
+        There was a technical error (attempt {error_count}).
+
+        If this is attempt 1-2: Provide a friendly message about trying again.
+        If this is attempt 3+: Suggest simplifying the search or trying with basic requirements.
+        Only mention support number (+919403892230) if error_count > 3.
+
+        Be apologetic and helpful. Respond in the user's language.
         """
 
         try:
-            error_response = llm.invoke([SystemMessage(content=error_prompt)] + chat_history[-1:])
+            error_response = llm.invoke([SystemMessage(content=error_prompt)] + chat_history[-1:] if chat_history else [])
             error_message = error_response.content
         except:
-            error_message = "I apologize, but I encountered an issue. Please call CabsWale Support at +919403892230 for immediate assistance."
+            if error_count > 3:
+                error_message = "I apologize for the continued issues. Please call CabsWale Support at +919403892230 for immediate assistance."
+            else:
+                error_message = "I encountered an issue. Let me try a different approach to help you book your cab."
 
         return {
             **state,
             "last_bot_response": error_message,
             "tool_calls": [],
+            "error_count": error_count,
+            "last_error_type": "agent_error"
         }
 
 
-def extract_state_updates_from_llm_response(response: str, current_state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract any state updates that the LLM might have identified.
-    This is a helper function that can parse LLM responses for state changes.
-    """
-    updates = {}
-
-    # The LLM might indicate extracted information in its response
-    # We can add patterns here if needed, but primarily we rely on
-    # the LLM to call tools when it has all information
-
-    # For now, return empty updates as the LLM handles everything
-    return updates
-
-
 def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute tools requested by the agent"""
+    """Execute tools requested by the agent with enhanced error recovery"""
     logger.info("\n" + "="*50)
     logger.info("TOOL EXECUTOR NODE")
     logger.info("="*50)
@@ -220,6 +238,9 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     tool_messages = []
     state_updates = dict(state)
 
+    # Track if this execution succeeds
+    execution_successful = False
+
     for tool_call in tool_calls:
         tool_name = tool_call.get("name")
         tool_args = tool_call.get("args", {})
@@ -230,7 +251,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         tool_to_call = tool_map.get(tool_name)
         if not tool_to_call:
-            error_msg = f"Tool '{tool_name}' not found. Please contact support at +919403892230."
+            error_msg = f"Tool '{tool_name}' not found. Let me try a different approach."
             logger.error(f"❌ {error_msg}")
             tool_messages.append(
                 ToolMessage(content=error_msg, tool_call_id=tool_id, name=tool_name)
@@ -238,6 +259,23 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         try:
+            # Check if we should simplify filters based on error count
+            error_count = state_updates.get("error_count", 0)
+            if error_count > 2 and "filters" in tool_args and tool_args["filters"]:
+                logger.info(f"⚠️ Simplifying filters due to {error_count} previous errors")
+                # Keep only basic filters
+                original_filters = tool_args["filters"]
+                simplified_filters = {}
+
+                # Only keep vehicle type if specified
+                if "vehicleTypes" in original_filters:
+                    simplified_filters["vehicleTypes"] = original_filters["vehicleTypes"]
+                elif "vehicles" in original_filters:
+                    simplified_filters["vehicles"] = original_filters["vehicles"]
+
+                tool_args["filters"] = simplified_filters
+                logger.info(f"📋 Simplified filters: {simplified_filters}")
+
             # Prepare tool arguments
             prepared_args = prepare_tool_arguments(tool_name, tool_args, state_updates)
 
@@ -248,13 +286,20 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             output = tool_to_call.invoke(prepared_args)
             logger.info(f"\n✅ Tool execution completed")
 
+            # Check if execution was successful
+            if output.get("status") in ["success", "partial_success"]:
+                execution_successful = True
+
             # Update state based on tool output
             update_state_from_tool_output(tool_name, output, prepared_args, state_updates)
 
             # Format output for LLM
             if tool_name == "create_trip_and_check_availability":
                 if output.get("status") == "success":
-                    # Success message that LLM will convert to user's language
+                    # Reset error count on success
+                    state_updates["error_count"] = 0
+                    state_updates["last_error_type"] = ""
+
                     output_str = json.dumps({
                         "status": "success",
                         "message": "SUCCESS: I'm connecting with drivers for prices and availability. You'll start receiving driver details with prices shortly. This may take a few minutes.",
@@ -263,19 +308,39 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "note": "DO NOT mention driver count to user"
                     })
                     logger.info(f"✅ Trip {output.get('trip_id')} - {output.get('drivers_notified')} drivers notified")
+
                 elif output.get("status") == "partial_success":
+                    # Increment error count for partial success
+                    current_error = state_updates.get("error_count", 0)
+
                     output_str = json.dumps({
                         "status": "partial_success",
                         "message": output.get("message"),
                         "trip_id": output.get("trip_id"),
-                        "support_required": "If I'm unable to assist, please call CabsWale Support for immediate help on +919403892230"
+                        "suggestion": "Try with fewer filters or different preferences" if current_error > 1 else None,
+                        "support_last_resort": "If issues persist, call +919403892230" if current_error > 2 else None
                     })
+
+                    state_updates["error_count"] = current_error + 1
+                    state_updates["last_error_type"] = "no_drivers"
+
                 else:
-                    output_str = json.dumps({
-                        "status": "error",
-                        "message": output.get("message", "Technical error occurred"),
-                        "support": "If I'm unable to assist, please call CabsWale Support for immediate help on +919403892230"
-                    })
+                    # Error status
+                    current_error = state_updates.get("error_count", 0) + 1
+                    state_updates["error_count"] = current_error
+                    state_updates["last_error_type"] = "api_error"
+
+                    if current_error > 3:
+                        output_str = json.dumps({
+                            "status": "error",
+                            "message": "Multiple attempts failed. Support: +919403892230"
+                        })
+                    else:
+                        output_str = json.dumps({
+                            "status": "error",
+                            "message": "Let me try a different approach",
+                            "retry_attempt": current_error
+                        })
             else:
                 output_str = json.dumps(output) if isinstance(output, dict) else str(output)
 
@@ -285,10 +350,23 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         except Exception as e:
             logger.error(f"❌ Error executing tool {tool_name}: {e}", exc_info=True)
-            error_msg = json.dumps({
-                "status": "error",
-                "message": "Technical error occurred. Support: +919403892230"
-            })
+
+            # Increment error count
+            current_error = state_updates.get("error_count", 0) + 1
+            state_updates["error_count"] = current_error
+            state_updates["last_error_type"] = "tool_execution_error"
+
+            if current_error > 3:
+                error_msg = json.dumps({
+                    "status": "error",
+                    "message": "Technical issues persist. Support: +919403892230"
+                })
+            else:
+                error_msg = json.dumps({
+                    "status": "error",
+                    "message": f"Technical issue (attempt {current_error}). Trying alternative approach..."
+                })
+
             tool_messages.append(
                 ToolMessage(content=error_msg, tool_call_id=tool_id, name=tool_name)
             )
@@ -299,6 +377,8 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     logger.info("\n" + "="*50)
     logger.info("TOOL EXECUTOR COMPLETED")
+    logger.info(f"Execution successful: {execution_successful}")
+    logger.info(f"Error count: {state_updates.get('error_count', 0)}")
     logger.info("="*50)
 
     return state_updates
@@ -307,7 +387,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dict) -> Dict[str, Any]:
     """
     Prepare tool arguments, ensuring proper format for API.
-    The LLM provides the arguments, we just ensure they're in the right format.
+    Enhanced with intelligent filter mapping.
     """
     logger.info("\n🔧 Preparing tool arguments...")
     args = tool_args.copy()
@@ -315,7 +395,7 @@ def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dic
     if tool_name == "create_trip_and_check_availability":
         # Check if we should reuse existing trip
         if state.get("trip_id") and state.get("booking_status") == "completed":
-            # Check if core trip details match (LLM should handle this, but double-check)
+            # Check if core trip details match
             if (args.get("pickup_city") == state.get("pickup_location") and
                 args.get("drop_city") == state.get("drop_location") and
                 args.get("trip_type") == state.get("trip_type") and
@@ -353,8 +433,8 @@ def prepare_tool_arguments(tool_name: str, tool_args: Dict[str, Any], state: dic
 
 def ensure_api_filter_format(filters: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Ensure filters are in the correct format for the API.
-    The LLM should provide these correctly, but we validate here.
+    Enhanced filter formatting with complete preference mapping.
+    Handles all special service requests intelligently.
     """
     if not filters:
         return {}
@@ -369,20 +449,20 @@ def ensure_api_filter_format(filters: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         # Ensure vehicles is comma-separated string
-        if key == "vehicles":
+        if key in ["vehicles", "vehicleTypes"]:
             if isinstance(value, list):
                 api_filters["vehicles"] = ','.join(value)
             else:
                 api_filters["vehicles"] = str(value)
 
-        # Ensure booleans are strings
+        # Handle all boolean filters for special services
         elif key in ['isPetAllowed', 'married', 'verified', 'profileVerified',
                      'allowHandicappedPersons', 'availableForCustomersPersonalCar',
                      'availableForDrivingInEventWedding', 'availableForPartTimeFullTime']:
             if isinstance(value, bool):
                 api_filters[key] = "true" if value else "false"
-            elif isinstance(value, str) and value in ["true", "false"]:
-                api_filters[key] = value
+            elif isinstance(value, str) and value.lower() in ["true", "false"]:
+                api_filters[key] = value.lower()
             else:
                 api_filters[key] = "true" if value else "false"
 
@@ -392,6 +472,15 @@ def ensure_api_filter_format(filters: Dict[str, Any]) -> Dict[str, Any]:
                 api_filters[key] = int(value)
             except (ValueError, TypeError):
                 logger.warning(f"Could not convert {key}={value} to integer, skipping")
+
+        # Handle gender filter
+        elif key == 'gender':
+            if value and value.lower() in ['male', 'female']:
+                api_filters['gender'] = value.lower()
+
+        # Handle language filter
+        elif key == 'language':
+            api_filters['language'] = str(value)
 
         # Pass through other filters as-is
         else:
@@ -445,3 +534,4 @@ def update_state_from_tool_output(
             logger.info(f"     - Current Page: {state.get('current_page')}")
             logger.info(f"     - Total Drivers Notified: {len(state.get('driver_ids_notified', []))}")
             logger.info(f"     - Booking Status: {state.get('booking_status')}")
+            logger.info(f"     - Error Count: {state.get('error_count', 0)}")
