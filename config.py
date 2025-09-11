@@ -5,7 +5,7 @@ import os
 
 # API Configuration
 BASE_URL = "https://us-central1-cabswale-ai.cloudfunctions.net"
-GET_PREMIUM_DRIVERS_URL = f"{BASE_URL}/cabbot-botApiGetPremiumDrivers"
+GET_PREMIUM_DRIVERS_URL = f"{BASE_URL}/cabbot-botApiGetPremiumDriversDev"
 CREATE_TRIP_URL = "https://cabbot-botcreatetrip-x7ozexvczq-uc.a.run.app"
 SEND_AVAILABILITY_REQUEST_URL = f"{BASE_URL}/cabbot-botSendAvilabilityRequestToDrivers"
 

@@ -48,6 +48,9 @@ app = FastAPI(title="Cab Booking Bot", lifespan=lifespan)
 origins = [
     "https://www.cabswale.ai",
     "http://localhost:3000",
+    "https://cabswale-landing-page-dev--cabswale-ai.us-central1.hosted.app",
+    "https://cabswale-ai.web.app",
+    "https://us-central1-cabswale-ai.cloudfunctions.net",
 ]
 
 app.add_middleware(

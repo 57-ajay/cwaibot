@@ -158,7 +158,7 @@ class AsyncRedisSessionManager:
 
     def _get_session_key(self, user_id: str) -> str:
         """Generate Redis key for user session"""
-        return f"cab_bot:session:{user_id}"
+        return f"cab_bot:session:{user_id}:DEV"
 
     def _serialize_state(self, state: ConversationState) -> bytes:
         """Serialize ConversationState to bytes - minimal version"""

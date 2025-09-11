@@ -60,6 +60,8 @@ def create_trip_and_check_availability(
     if existing_trip_id:
         logger.info(f"♻️ Reusing existing trip: {existing_trip_id}")
 
+    trip_id = None
+
     logger.info("="*50)
 
     # STEP 1: CREATE OR REUSE TRIP
@@ -141,6 +143,7 @@ def create_trip_and_check_availability(
         config.DRIVERS_PER_FETCH,
         page,
         processed_filters,
+        trip_id
     )
 
     if not driver_ids:

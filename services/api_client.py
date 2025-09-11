@@ -16,6 +16,7 @@ def get_driver_ids(
     limit: int = config.DRIVERS_PER_FETCH,
     page: int = 1,
     filters: Optional[Dict[str, Any]] = None,
+    trip_id: Optional[str] = ""
 ) -> List[str]:
     """
     Get only driver IDs from the API with proper filter handling
@@ -39,6 +40,7 @@ def get_driver_ids(
             "city": city,
             "page": page,
             "limit": limit,
+            "tripId": trip_id
         }
 
         # Add filters if provided
