@@ -1,5 +1,5 @@
 # services/redis_service.py
-"""Minimal Redis service for session management"""
+"""Simplified Redis service for session management"""
 
 import redis.asyncio as redis
 import pickle
@@ -101,7 +101,7 @@ class MessageSerializer:
 
 
 class AsyncRedisSessionManager:
-    """Minimal Redis session manager"""
+    """Simplified Redis session manager"""
 
     def __init__(self):
         self.config = RedisConfig()
@@ -161,13 +161,13 @@ class AsyncRedisSessionManager:
         return f"cab_bot:session:{user_id}"
 
     def _serialize_state(self, state: ConversationState) -> bytes:
-        """Serialize ConversationState to bytes - minimal version"""
+        """Serialize ConversationState to bytes"""
         state_dict = {
             "chat_history": [
                 self.message_serializer.serialize_message(msg)
                 for msg in state.chat_history
             ],
-            "applied_filters": state.applied_filters,
+            "user_preferences": state.user_preferences,
             "trip_id": state.trip_id,
             "pickup_location": state.pickup_location,
             "drop_location": state.drop_location,
@@ -181,15 +181,13 @@ class AsyncRedisSessionManager:
             "last_bot_response": state.last_bot_response,
             "tool_calls": state.tool_calls,
             "booking_status": state.booking_status,
-            "driver_ids_notified": state.driver_ids_notified,  # Only driver IDs
-             "current_page": state.current_page,
             "last_activity": datetime.now().isoformat(),
         }
 
         return pickle.dumps(state_dict)
 
     def _deserialize_state(self, data: bytes) -> ConversationState:
-        """Deserialize bytes to ConversationState - minimal version"""
+        """Deserialize bytes to ConversationState"""
         state_dict = pickle.loads(data)
 
         # Reconstruct chat history
@@ -198,10 +196,10 @@ class AsyncRedisSessionManager:
             for msg_dict in state_dict.get("chat_history", [])
         ]
 
-        # Create minimal ConversationState
+        # Create ConversationState
         state = ConversationState(
             chat_history=chat_history,
-            applied_filters=state_dict.get("applied_filters", {}),
+            user_preferences=state_dict.get("user_preferences", {}),
             trip_id=state_dict.get("trip_id"),
             pickup_location=state_dict.get("pickup_location"),
             drop_location=state_dict.get("drop_location"),
@@ -215,8 +213,6 @@ class AsyncRedisSessionManager:
             last_bot_response=state_dict.get("last_bot_response"),
             tool_calls=state_dict.get("tool_calls", []),
             booking_status=state_dict.get("booking_status"),
-            driver_ids_notified=state_dict.get("driver_ids_notified", []),
-            current_page=state_dict.get("current_page", 1)
         )
 
         return state

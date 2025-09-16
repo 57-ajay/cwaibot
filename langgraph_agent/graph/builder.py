@@ -1,16 +1,16 @@
 # langgraph_agent/graph/builder.py
-"""Simplified LangGraph agent builder"""
+"""Simplified LangGraph agent builder for trip creation"""
 
 from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage
 
 
-# Define the minimal state type
+# Define the simplified state type
 class GraphState(TypedDict, total=False):
-    """Minimal state definition for the graph"""
+    """Simplified state definition for the graph"""
     chat_history: List[BaseMessage]
-    applied_filters: Dict[str, Any]
+    user_preferences: Dict[str, Any]
     trip_id: Optional[str]
     pickup_location: Optional[str]
     drop_location: Optional[str]
@@ -24,8 +24,6 @@ class GraphState(TypedDict, total=False):
     last_bot_response: Optional[str]
     tool_calls: List[Dict[str, Any]]
     booking_status: Optional[str]
-    driver_ids_notified: List[str]  # Only driver IDs
-    current_page: int
 
 
 # Import and wrap node functions
@@ -51,7 +49,7 @@ def route_after_agent(state: GraphState) -> str:
 
 
 def create_graph():
-    """Create the LangGraph workflow"""
+    """Create the simplified LangGraph workflow"""
     workflow = StateGraph(GraphState)
 
     # Add nodes with wrapped functions

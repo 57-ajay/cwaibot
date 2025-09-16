@@ -1,5 +1,5 @@
 # main.py
-"""Simplified main application - removed Slack, kept only essential endpoints"""
+"""Simplified main application - focused on trip creation"""
 
 import os
 import asyncio
@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+
 # Import your agent and state model
 from langgraph_agent.graph.builder import app as cab_agent
 from models.state_model import ConversationState
@@ -44,7 +45,9 @@ async def lifespan(app: FastAPI):
 
 
 # Initialize FastAPI with lifespan
-app = FastAPI(title="Cab Booking Bot", lifespan=lifespan)
+app = FastAPI(title="Cab Booking Bot - Simplified", lifespan=lifespan)
+
+# CORS configuration
 origins = [
     "https://www.cabswale.ai",
     "http://localhost:3000",
@@ -76,7 +79,7 @@ class ChatRequest(BaseModel):
 
 
 async def get_user_state(user_id: str, customer_details: dict = None) -> ConversationState:
-    """Get or create user conversation state with async Redis integration"""
+    """Get or create user conversation state"""
 
     # First, try to get from Redis
     state = await redis_manager.get_session(user_id)
@@ -115,7 +118,7 @@ async def get_user_state(user_id: str, customer_details: dict = None) -> Convers
     logger.info(f"🆕 Creating new session for {user_id}")
     new_state = ConversationState(
         chat_history=[],
-        applied_filters={},
+        user_preferences={},
         trip_id=None,
         pickup_location=None,
         drop_location=None,
@@ -128,8 +131,7 @@ async def get_user_state(user_id: str, customer_details: dict = None) -> Convers
         customer_profile=customer_details.get("customer_profile") if customer_details else None,
         last_bot_response=None,
         tool_calls=[],
-        booking_status=None,
-        driver_ids_notified=[]
+        booking_status=None
     )
 
     # Save to Redis
@@ -165,15 +167,14 @@ async def clear_user_session(user_id: str) -> bool:
 
 
 async def process_message_async(user_id: str, message: str, customer_details: dict = {}) -> str:
-    """Process user message through cab agent with async Redis-backed state management"""
+    """Process user message through simplified cab agent"""
     logger.info(f"🔄 Processing for {user_id}: {message}")
 
-    # Get user state from Redis/fallback - IMPORTANT: Pass customer details
+    # Get user state from Redis/fallback
     state_model = await get_user_state(user_id, customer_details)
 
-    # Handle simple commands
+    # Handle reset command
     if message.lower().strip() in ["reset", "start over", "restart"]:
-        # Clear the session from Redis
         await clear_user_session(user_id)
         return "🔄 Let's start fresh! Please tell me your pickup city, destination, travel date, and whether it's a one-way or round trip."
 
@@ -183,17 +184,16 @@ async def process_message_async(user_id: str, message: str, customer_details: di
     # Convert Pydantic model to dict for the agent
     state_dict = state_model.to_dict()
 
-    # Process through agent in executor (since it's sync)
+    # Process through agent
     try:
-        logger.info(f"🤖 Invoking agent...")
+        logger.info(f"🤖 Invoking simplified agent...")
 
         # Run the sync agent in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
 
-        # Increased timeout for background operations
         result = await asyncio.wait_for(
             loop.run_in_executor(None, cab_agent.invoke, state_dict),
-            timeout=60.0
+            timeout=30.0  # Reduced timeout since we're not making multiple API calls
         )
 
         # Ensure result is valid
@@ -203,7 +203,7 @@ async def process_message_async(user_id: str, message: str, customer_details: di
 
         # Update the Pydantic state model from the result
         state_model.chat_history = result.get("chat_history", state_model.chat_history)
-        state_model.applied_filters = result.get("applied_filters", state_model.applied_filters)
+        state_model.user_preferences = result.get("user_preferences", state_model.user_preferences)
 
         # Update trip details
         if result.get("trip_id") is not None:
@@ -224,10 +224,6 @@ async def process_message_async(user_id: str, message: str, customer_details: di
 
         if result.get("booking_status") is not None:
             state_model.booking_status = result.get("booking_status")
-        if result.get("driver_ids_notified") is not None:
-            state_model.driver_ids_notified = result.get("driver_ids_notified")
-        if result.get("current_page") is not None:
-            state_model.current_page = result.get("current_page")
 
         # Save updated state to Redis
         await save_user_state(user_id, state_model)
@@ -247,7 +243,7 @@ async def process_message_async(user_id: str, message: str, customer_details: di
 
         # Final fallback
         if not response or not response.strip():
-            response = "I'm here to help you book an outstation cab. Please tell me your pickup city, destination, and travel date."
+            response = "I'm here to help you book a cab. Please tell me your pickup city, destination, and travel date."
 
         # Extend session TTL on successful interaction
         await redis_manager.extend_session(user_id)
@@ -256,16 +252,17 @@ async def process_message_async(user_id: str, message: str, customer_details: di
 
     except asyncio.TimeoutError:
         logger.error(f"⏰ Agent call timed out for {user_id}")
-        return "The booking process is taking longer than expected. Please wait a moment and I'll update you on the status."
+        return "The booking process is taking longer than expected. Please try again."
     except Exception as e:
         logger.error(f"❌ Error processing message: {e}")
-        await clear_user_session(user_id)
-        return "If I'm unable to assist, please call CabsWale Support for immediate help on +919403892230"
+        return "I encountered an issue. Please try again or call support at +919403892230"
+
 
 @app.post("/chat")
 async def chat_with_bot(chat_request: ChatRequest):
     """
     Handles a chat message from a user and returns the bot's response.
+    Simplified to focus on trip creation.
     """
     customer_details = {
         "customer_id": chat_request.customer_id,
@@ -280,18 +277,25 @@ async def chat_with_bot(chat_request: ChatRequest):
         customer_details
     )
 
-    has_sent_availabilityRequest = False
-    message = "I'm connecting with drivers for prices and availability. You'll start receiving driver details with prices shortly. This may take a few minutes."
+    # Check if trip was created (simplified check)
+    trip_created = False
+    success_messages = [
+        "i've created your trip",
+        "trip created",
+        "you'll start receiving quotations",
+        "drivers will contact you"
+    ]
 
-    partial_message = "prices and availability"
-
-    if message.lower() in response.lower() or partial_message.lower() in response.lower():
-        has_sent_availabilityRequest = True
+    response_lower = response.lower()
+    for msg in success_messages:
+        if msg in response_lower:
+            trip_created = True
+            break
 
     return {
         "type": "text",
         "response": response,
-        "has_sent_availabilityRequest": has_sent_availabilityRequest
+        "trip_created": trip_created  # Simplified flag
     }
 
 
@@ -336,8 +340,8 @@ async def home():
 
     return {
         "status": "running",
-        "bot": "Cab Booking Assistant",
-        "version": "3.0",
+        "bot": "Cab Booking Assistant - Simplified",
+        "version": "4.0",
         "active_sessions": len(active_sessions),
         "fallback_storage_users": len(fallback_storage),
         "redis_status": redis_health.get("status"),
@@ -353,7 +357,8 @@ async def home():
 if __name__ == "__main__":
     import uvicorn
 
-    print("\n🚀 Starting Cab Booking Bot API v3.0")
+    print("\n🚀 Starting Simplified Cab Booking Bot API v4.0")
+    print("✨ Focused on trip creation with preferences")
 
     port = int(os.environ.get("PORT", 8080))
     print(f"📍 Server running on: http://localhost:{port}")
