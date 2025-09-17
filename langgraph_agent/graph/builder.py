@@ -1,14 +1,14 @@
 # langgraph_agent/graph/builder.py
-"""Simplified LangGraph agent builder for trip creation"""
+"""Enhanced LangGraph agent builder with new features"""
 
 from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage
 
 
-# Define the simplified state type
+# Define the enhanced state type
 class GraphState(TypedDict, total=False):
-    """Simplified state definition for the graph"""
+    """Enhanced state definition for the graph"""
     chat_history: List[BaseMessage]
     user_preferences: Dict[str, Any]
     trip_id: Optional[str]
@@ -24,6 +24,9 @@ class GraphState(TypedDict, total=False):
     last_bot_response: Optional[str]
     tool_calls: List[Dict[str, Any]]
     booking_status: Optional[str]
+    # New fields
+    source: Optional[str]  # Source of booking: 'app', 'website', 'whatsapp'
+    passenger_count: Optional[int]  # Number of passengers for smart vehicle selection
 
 
 # Import and wrap node functions
@@ -49,7 +52,7 @@ def route_after_agent(state: GraphState) -> str:
 
 
 def create_graph():
-    """Create the simplified LangGraph workflow"""
+    """Create the enhanced LangGraph workflow"""
     workflow = StateGraph(GraphState)
 
     # Add nodes with wrapped functions

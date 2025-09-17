@@ -76,10 +76,10 @@ class ChatRequest(BaseModel):
     customer_name: Optional[str] = None
     customer_profile: Optional[str] = None
     customer_phone: Optional[str] = None
+    source: Optional[str] = "website"
 
-
-async def get_user_state(user_id: str, customer_details: dict = None) -> ConversationState:
-    """Get or create user conversation state"""
+async def get_user_state(user_id: str, customer_details: dict = None, source: str = "app") -> ConversationState:
+    """Get or create user conversation state with source tracking"""
 
     # First, try to get from Redis
     state = await redis_manager.get_session(user_id)
@@ -88,7 +88,7 @@ async def get_user_state(user_id: str, customer_details: dict = None) -> Convers
         # Session exists in Redis
         logger.info(f"✅ Found existing session for {user_id}")
 
-        # Update customer details if provided and changed
+        # Update customer details and source if provided and changed
         if customer_details:
             updated = False
             if customer_details.get("customer_id") and state.customer_id != customer_details["customer_id"]:
@@ -104,6 +104,11 @@ async def get_user_state(user_id: str, customer_details: dict = None) -> Convers
                 state.customer_profile = customer_details["customer_profile"]
                 updated = True
 
+            # Update source if changed
+            if source and state.source != source:
+                state.source = source
+                updated = True
+
             if updated:
                 await redis_manager.save_session(user_id, state)
 
@@ -112,10 +117,13 @@ async def get_user_state(user_id: str, customer_details: dict = None) -> Convers
     # No session in Redis, check fallback storage
     if user_id in fallback_storage:
         logger.info(f"📦 Using fallback storage for {user_id}")
+        # Update source if provided
+        if source:
+            fallback_storage[user_id].source = source
         return fallback_storage[user_id]
 
-    # Create new session WITH customer details
-    logger.info(f"🆕 Creating new session for {user_id}")
+    # Create new session WITH customer details and source
+    logger.info(f"🆕 Creating new session for {user_id} from {source}")
     new_state = ConversationState(
         chat_history=[],
         user_preferences={},
@@ -131,7 +139,9 @@ async def get_user_state(user_id: str, customer_details: dict = None) -> Convers
         customer_profile=customer_details.get("customer_profile") if customer_details else None,
         last_bot_response=None,
         tool_calls=[],
-        booking_status=None
+        booking_status=None,
+        source=source,  # Add source to state
+        passenger_count=None  # Add passenger count field
     )
 
     # Save to Redis
@@ -141,7 +151,6 @@ async def get_user_state(user_id: str, customer_details: dict = None) -> Convers
         fallback_storage[user_id] = new_state
 
     return new_state
-
 
 async def save_user_state(user_id: str, state: ConversationState) -> bool:
     """Save user state to Redis with fallback"""
@@ -166,17 +175,25 @@ async def clear_user_session(user_id: str) -> bool:
     return redis_deleted
 
 
-async def process_message_async(user_id: str, message: str, customer_details: dict = {}) -> str:
-    """Process user message through simplified cab agent"""
-    logger.info(f"🔄 Processing for {user_id}: {message}")
+async def process_message_async(user_id: str, message: str, customer_details: dict = {}, source: str = "website") -> str:
+    """Process user message through enhanced cab agent"""
+    logger.info(f"🔄 Processing for {user_id} from {source}: {message}")
 
-    # Get user state from Redis/fallback
-    state_model = await get_user_state(user_id, customer_details)
+    # Get user state from Redis/fallback with source
+    state_model = await get_user_state(user_id, customer_details, source)
 
     # Handle reset command
     if message.lower().strip() in ["reset", "start over", "restart"]:
         await clear_user_session(user_id)
         return "🔄 Let's start fresh! Please tell me your pickup city, destination, travel date, and whether it's a one-way or round trip."
+
+    # Handle cancel command
+    if message.lower().strip() in ["cancel", "cancel trip", "cancel booking"]:
+        if state_model.trip_id:
+            # Let the agent handle the cancellation through tools
+            pass
+        else:
+            return "I don't see any active trip to cancel. Would you like to book a new cab?"
 
     # Add message to chat history
     state_model.chat_history.append(HumanMessage(content=message))
@@ -186,14 +203,14 @@ async def process_message_async(user_id: str, message: str, customer_details: di
 
     # Process through agent
     try:
-        logger.info(f"🤖 Invoking simplified agent...")
+        logger.info(f"🤖 Invoking enhanced agent...")
 
         # Run the sync agent in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
 
         result = await asyncio.wait_for(
             loop.run_in_executor(None, cab_agent.invoke, state_dict),
-            timeout=30.0  # Reduced timeout since we're not making multiple API calls
+            timeout=30.0
         )
 
         # Ensure result is valid
@@ -218,6 +235,8 @@ async def process_message_async(user_id: str, message: str, customer_details: di
             state_model.start_date = result.get("start_date")
         if result.get("end_date") is not None:
             state_model.end_date = result.get("end_date")
+        if result.get("passenger_count") is not None:
+            state_model.passenger_count = result.get("passenger_count")
 
         state_model.last_bot_response = result.get("last_bot_response", state_model.last_bot_response)
         state_model.tool_calls = result.get("tool_calls", state_model.tool_calls)
@@ -271,20 +290,34 @@ async def chat_with_bot(chat_request: ChatRequest):
         "customer_phone": chat_request.customer_phone,
     }
 
+    source = chat_request.source if chat_request.source else "website"
+
     response = await process_message_async(
         chat_request.user_id,
         chat_request.message,
-        customer_details
+        customer_details,
+        source
     )
 
     # Check if trip was created (simplified check)
     trip_created = False
+    trip_cancelled = False
+
     success_messages = [
-        "i've created your trip",
-        "trip created",
-        "you'll start receiving quotations",
-        "drivers will contact you"
-    ]
+            "i've created your trip",
+            "trip created",
+            "connecting with drivers",
+            "This may take a few minutes",
+            "you'll start receiving quotations",
+            "drivers will contact you",
+            "receiving driver"
+        ]
+
+    cancel_messages = [
+            "cancelled successfully",
+            "trip has been cancelled",
+            "booking cancelled"
+        ]
 
     response_lower = response.lower()
     for msg in success_messages:
@@ -292,12 +325,18 @@ async def chat_with_bot(chat_request: ChatRequest):
             trip_created = True
             break
 
-    return {
-        "type": "text",
-        "response": response,
-        "trip_created": trip_created  # Simplified flag
-    }
+    for msg in cancel_messages:
+        if msg in response_lower:
+            trip_cancelled = True
+            break
 
+    return {
+            "type": "text",
+            "response": response,
+            "trip_created": trip_created,
+            "trip_cancelled": trip_cancelled,
+            "source": chat_request.source
+        }
 
 @app.get("/sessions")
 async def get_all_sessions():

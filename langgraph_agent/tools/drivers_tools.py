@@ -1,5 +1,5 @@
 # langgraph_agent/tools/drivers_tools.py
-"""Simplified driver tools - only trip creation with preferences"""
+"""Enhanced driver tools with trip cancellation and smart features"""
 
 import logging
 from typing import Dict, Any, Optional
@@ -13,6 +13,52 @@ logger = logging.getLogger(__name__)
 
 
 @tool
+def cancel_trip(
+    trip_id: str,
+    customer_id: str
+) -> Dict[str, Any]:
+    """
+    Cancels an existing trip.
+
+    Args:
+        trip_id: The ID of the trip to cancel
+        customer_id: The customer ID for verification
+
+    Returns:
+        Dictionary with cancellation status
+    """
+    logger.info("="*50)
+    logger.info("CANCELLING TRIP")
+    logger.info(f"Trip ID: {trip_id}")
+    logger.info(f"Customer ID: {customer_id}")
+    logger.info("="*50)
+
+    try:
+        # Call the cancellation API
+        result = api_client.cancel_trip(trip_id)
+
+        if result and result.get("status") == "success":
+            logger.info(f"✅ Trip {trip_id} cancelled successfully")
+            return {
+                "status": "success",
+                "message": f"Your trip has been cancelled successfully. Trip ID: {trip_id}"
+            }
+        else:
+            logger.error(f"❌ Failed to cancel trip {trip_id}")
+            return {
+                "status": "error",
+                "message": "Unable to cancel the trip. Please try again or contact support at +919403892230"
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Error cancelling trip: {e}")
+        return {
+            "status": "error",
+            "message": "Technical issue occurred while cancelling. Please contact support at +919403892230"
+        }
+
+
+@tool
 def create_trip_with_preferences(
     pickup_city: str,
     drop_city: str,
@@ -21,9 +67,11 @@ def create_trip_with_preferences(
     start_date: str,
     return_date: Optional[str] = None,
     preferences: Optional[Dict[str, Any]] = None,
+    source: Optional[str] = "app",
+    passenger_count: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Creates a trip with user preferences. This is the ONLY objective.
+    Creates a trip with user preferences and smart vehicle selection.
 
     Args:
         pickup_city: The city from where the trip starts
@@ -33,6 +81,8 @@ def create_trip_with_preferences(
         start_date: The start date for the trip, in YYYY-MM-DD format
         return_date: (Optional) The return date for a round-trip, in YYYY-MM-DD format
         preferences: (Optional) User preferences for the trip (vehicle type, driver preferences, etc.)
+        source: (Optional) Source of the booking - 'app', 'website', or 'whatsapp'
+        passenger_count: (Optional) Number of passengers for smart vehicle selection
 
     Returns:
         Dictionary with trip creation status
@@ -42,6 +92,8 @@ def create_trip_with_preferences(
     logger.info(f"Route: {pickup_city} to {drop_city}")
     logger.info(f"Trip Type: {trip_type}")
     logger.info(f"Customer: {customer_details.get('name')} (ID: {customer_details.get('id')})")
+    logger.info(f"Source: {source}")
+    logger.info(f"Passenger Count: {passenger_count}")
     logger.info(f"Preferences: {preferences}")
     logger.info("="*50)
 
@@ -75,10 +127,13 @@ def create_trip_with_preferences(
     else:
         formatted_end_date = formatted_start_date
 
-    # Process preferences for API format if provided, otherwise use empty dict
-    processed_preferences = process_preferences_for_api(preferences) if preferences else {}
+    # Process preferences with smart vehicle selection
+    processed_preferences = process_preferences_with_smart_selection(
+        preferences,
+        passenger_count
+    )
 
-    # Call trip creation API with preferences
+    # Call trip creation API with preferences and source
     trip_data = api_client.create_trip_with_preferences(
         customer_details,
         pickup_city,
@@ -86,7 +141,8 @@ def create_trip_with_preferences(
         trip_type.lower(),
         formatted_start_date,
         formatted_end_date,
-        processed_preferences  # Pass preferences to the API
+        processed_preferences,
+        source  # Pass source to the API
     )
 
     if not trip_data or "tripId" not in trip_data:
@@ -108,23 +164,56 @@ def create_trip_with_preferences(
     }
 
 
-def process_preferences_for_api(preferences: Dict[str, Any]) -> Dict[str, Any]:
+def process_preferences_with_smart_selection(
+    preferences: Optional[Dict[str, Any]],
+    passenger_count: Optional[int] = None
+) -> Dict[str, Any]:
     """
-    Process user preferences to match EXACT API format from botApiGetPremiumDriversDev
+    Process user preferences with smart vehicle selection.
+    The LLM handles extraction - we just apply business logic.
+    Silently ignores unsupported preferences.
     """
-    logger.info("Processing preferences for API...")
+    logger.info("Processing preferences...")
+
+    # List of supported preference fields
+    SUPPORTED_PREFERENCES = {
+        'vehicles', 'vehicleType', 'language', 'isPetAllowed', 'gender',
+        'married', 'minDrivingExperience', 'minAge', 'maxAge', 'minConnections',
+        'allowHandicappedPersons', 'availableForCustomersPersonalCar',
+        'availableForDrivingInEventWedding', 'availableForPartTimeFullTime',
+        'verified', 'profileVerified'
+    }
+
     processed = {}
 
-    if not preferences:
-        return {}
+    # Smart vehicle selection - LLM should have already done this, but double-check
+    if passenger_count:
+        if passenger_count >= 8:
+            logger.info(f"Ensuring Tempo Traveller for {passenger_count} passengers")
+            processed['vehicles'] = 'TempoTraveller'
+        elif passenger_count >= 5:
+            logger.info(f"Ensuring SUV for {passenger_count} passengers")
+            processed['vehicles'] = 'SUV'
+        # For less than 5, let user preference or no selection
 
-    # Vehicle type preferences - API expects 'vehicles' as comma-separated string
-    if 'vehicleType' in preferences or 'vehicles' in preferences:
-        vehicle_value = preferences.get('vehicleType') or preferences.get('vehicles')
-        if isinstance(vehicle_value, list):
-            processed['vehicles'] = ','.join(vehicle_value)
-        elif vehicle_value:
-            processed['vehicles'] = str(vehicle_value)
+    if not preferences:
+        return processed
+
+    # Process only supported preferences, silently ignore others
+    for key, value in preferences.items():
+        # Check if this is a supported preference
+        if key not in SUPPORTED_PREFERENCES and key not in ['isPetFriendly']:
+            logger.debug(f"Ignoring unsupported preference: {key}")
+            continue
+
+    # Vehicle type preferences - don't override smart selection
+    if not processed.get('vehicles'):
+        if 'vehicleType' in preferences or 'vehicles' in preferences:
+            vehicle_value = preferences.get('vehicleType') or preferences.get('vehicles')
+            if isinstance(vehicle_value, list):
+                processed['vehicles'] = ','.join(vehicle_value)
+            elif vehicle_value:
+                processed['vehicles'] = str(vehicle_value)
 
     # Language preference - direct string
     if 'language' in preferences and preferences['language']:

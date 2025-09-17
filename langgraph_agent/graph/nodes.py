@@ -1,5 +1,5 @@
 # langgraph_agent/graph/nodes.py
-"""Simplified LLM-driven agent focused on trip creation with preferences"""
+"""Simplified LLM-driven agent - trusting LLM's intelligence"""
 
 import json
 import logging
@@ -10,14 +10,14 @@ from langchain_core.messages import SystemMessage, ToolMessage, AIMessage
 from langchain_google_vertexai import ChatVertexAI
 
 from langgraph_agent.graph.sys_prompt import bot_prompt
-from langgraph_agent.tools.drivers_tools import create_trip_with_preferences
+from langgraph_agent.tools.drivers_tools import create_trip_with_preferences, cancel_trip
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Tools list - simplified to just trip creation
-tools = [create_trip_with_preferences]
+# Tools list
+tools = [create_trip_with_preferences, cancel_trip]
 
 # Initialize LLM
 llm = ChatVertexAI(model="gemini-2.5-flash", temperature=0.7)
@@ -26,8 +26,7 @@ llm_with_tools = llm.bind_tools(tools)
 
 def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Simplified agent node focused on trip creation.
-    Collects trip details and preferences, then creates the trip.
+    Simplified agent node - trusting LLM to extract everything intelligently.
     """
     logger.info("\n" + "="*50)
     logger.info("AGENT NODE EXECUTION")
@@ -37,8 +36,7 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("Current State:")
     logger.info(f"  - Customer ID: {state.get('customer_id')}")
     logger.info(f"  - Trip ID: {state.get('trip_id')}")
-    logger.info(f"  - Route: {state.get('pickup_location')} to {state.get('drop_location')}")
-    logger.info(f"  - Preferences: {state.get('user_preferences', {})}")
+    logger.info(f"  - Source: {state.get('source', 'app')}")
 
     # Get current date for context
     current_date_str = datetime.now().strftime("%Y-%m-%d")
@@ -46,25 +44,23 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # Get chat history
     chat_history = state.get("chat_history", [])
 
-    # Build simplified prompt - use f-string for the entire prompt
+    # Build enhanced prompt with FAQ knowledge and current state
     enhanced_prompt = bot_prompt.replace("{current_date}", current_date_str) + f"""
 
-## CURRENT CONVERSATION STATE:
-- Pickup Location: {state.get('pickup_location', 'Not set')}
-- Drop Location: {state.get('drop_location', 'Not set')}
-- Travel Date: {state.get('start_date', 'Not set')}
-- Trip Type: {state.get('trip_type', 'Not set')}
-- User Preferences: {json.dumps(state.get('user_preferences', {}))}
+## CURRENT STATE:
 - Trip ID: {state.get('trip_id', 'None')}
+- Source: {state.get('source', 'app')}
+- Customer: {state.get('customer_name', 'Unknown')} (ID: {state.get('customer_id', 'None')})
 
-## YOUR TASK:
-1. Collect ALL trip details: pickup city, drop city, travel date, trip type (one-way/round-trip)
-2. Ask for user preferences (vehicle type, driver preferences, etc.) - but ONLY if not already provided
-3. Once you have ALL information, create the trip with preferences
-4. NEVER create a trip with partial information
-5. Be conversational and minimize questions - if user provides everything, don't ask again
+## INSTRUCTIONS:
+1. If user asks about CabsWale (pricing, safety, how it works, etc.) - answer from the FAQ knowledge
+2. If user wants to book - extract ALL details intelligently (cities, date, passengers, preferences)
+3. If user wants to cancel and trip exists - cancel it
+4. Trust your intelligence to extract passenger count from ANY language/format
+5. Auto-select vehicle based on passenger count (8+ → TempoTraveller, 5-7 → SUV)
+6. Never mention unsupported preferences to users
 
-Remember: Your ONLY job is to collect information and create the trip. Firebase will handle driver notifications automatically.
+Be natural and conversational. You're smart enough to understand context in any language!
 """
 
     # Build messages for LLM
@@ -85,7 +81,7 @@ Remember: Your ONLY job is to collect information and create the trip. Firebase 
         # Check if the response has tool_calls
         if isinstance(ai_response, AIMessage):
             if not ai_response.tool_calls:
-                # Direct response
+                # Direct response (could be FAQ or asking for more info)
                 logger.info("✅ Agent provided direct response")
 
                 return {
@@ -117,7 +113,7 @@ Remember: Your ONLY job is to collect information and create the trip. Firebase 
     except Exception as e:
         logger.error(f"❌ Error in agent_node: {e}", exc_info=True)
 
-        error_message = "I encountered an issue. Let me help you book your cab. Please provide your pickup city, destination, and travel date."
+        error_message = "I encountered an issue. You can call our support at +919403892230 for immediate assistance, or try again with your booking request."
 
         return {
             **state,
@@ -127,7 +123,7 @@ Remember: Your ONLY job is to collect information and create the trip. Firebase 
 
 
 def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute tool to create trip with preferences"""
+    """Execute tools for trip creation or cancellation"""
     logger.info("\n" + "="*50)
     logger.info("TOOL EXECUTOR NODE")
     logger.info("="*50)
@@ -159,43 +155,69 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         try:
-            # Add customer details - use empty strings if missing
-            tool_args["customer_details"] = {
-                "id": state_updates.get("customer_id") or "",
-                "name": state_updates.get("customer_name") or "",
-                "phone": state_updates.get("customer_phone") or "",
-                "profile_image": state_updates.get("customer_profile") or "",
-            }
+            if tool_name == "cancel_trip":
+                # Handle trip cancellation
+                tool_args["customer_id"] = state_updates.get("customer_id") or ""
 
-            logger.info("\n📞 CALLING TOOL FUNCTION...")
+                logger.info("\n📞 CALLING CANCELLATION TOOL...")
+                output = tool_to_call.invoke(tool_args)
 
-            # Execute the tool
-            output = tool_to_call.invoke(tool_args)
-            logger.info(f"\n✅ Tool execution completed")
+                if output.get("status") == "success":
+                    state_updates["trip_id"] = None
+                    state_updates["booking_status"] = "cancelled"
 
-            # Update state based on tool output
-            if output.get("status") == "success":
-                state_updates["trip_id"] = output.get("trip_id")
-                state_updates["booking_status"] = "completed"
-                state_updates["pickup_location"] = tool_args.get("pickup_city")
-                state_updates["drop_location"] = tool_args.get("drop_city")
-                state_updates["trip_type"] = tool_args.get("trip_type")
-                state_updates["start_date"] = tool_args.get("start_date")
-                state_updates["end_date"] = tool_args.get("return_date") or tool_args.get("start_date")
-                state_updates["user_preferences"] = tool_args.get("preferences", {})
+                output_str = json.dumps(output)
 
-                output_str = json.dumps({
-                    "status": "success",
-                    "message": output.get("message"),
-                    "trip_id": output.get("trip_id")
-                })
+            else:  # create_trip_with_preferences
+                # Add customer details
+                tool_args["customer_details"] = {
+                    "id": state_updates.get("customer_id") or "",
+                    "name": state_updates.get("customer_name") or "",
+                    "phone": state_updates.get("customer_phone") or "",
+                    "profile_image": state_updates.get("customer_profile") or "",
+                }
 
-                logger.info(f"✅ Trip {output.get('trip_id')} created successfully")
-            else:
-                output_str = json.dumps({
-                    "status": "error",
-                    "message": output.get("message", "Failed to create trip. Please try again.")
-                })
+                # Add source
+                tool_args["source"] = state_updates.get("source", "app")
+
+                # The LLM should have extracted passenger_count if mentioned
+                # It's passed in tool_args directly by the LLM
+
+                logger.info("\n📞 CALLING TRIP CREATION TOOL...")
+
+                # Execute the tool
+                output = tool_to_call.invoke(tool_args)
+                logger.info(f"\n✅ Tool execution completed")
+
+                # Update state based on tool output
+                if output.get("status") == "success":
+                    state_updates["trip_id"] = output.get("trip_id")
+                    state_updates["booking_status"] = "completed"
+
+                    # Store trip details from tool args
+                    state_updates["pickup_location"] = tool_args.get("pickup_city")
+                    state_updates["drop_location"] = tool_args.get("drop_city")
+                    state_updates["trip_type"] = tool_args.get("trip_type")
+                    state_updates["start_date"] = tool_args.get("start_date")
+                    state_updates["end_date"] = tool_args.get("return_date") or tool_args.get("start_date")
+                    state_updates["user_preferences"] = tool_args.get("preferences", {})
+
+                    # Store passenger count if it was provided
+                    if tool_args.get("passenger_count"):
+                        state_updates["passenger_count"] = tool_args.get("passenger_count")
+
+                    output_str = json.dumps({
+                        "status": "success",
+                        "message": output.get("message"),
+                        "trip_id": output.get("trip_id")
+                    })
+
+                    logger.info(f"✅ Trip {output.get('trip_id')} created successfully")
+                else:
+                    output_str = json.dumps({
+                        "status": "error",
+                        "message": output.get("message", "Failed to create trip. Please try again or call support at +919403892230.")
+                    })
 
             tool_messages.append(
                 ToolMessage(content=output_str, tool_call_id=tool_id, name=tool_name)

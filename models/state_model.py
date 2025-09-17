@@ -1,5 +1,5 @@
 # models/state_model.py
-"""Simplified state management for trip creation"""
+"""Enhanced state management with source tracking and passenger count"""
 
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -7,7 +7,7 @@ from langchain_core.messages import BaseMessage
 
 
 class ConversationState(BaseModel):
-    """Simplified state for user's conversation"""
+    """Enhanced state for user's conversation with new features"""
     model_config = {"arbitrary_types_allowed": True}
 
     # Chat history
@@ -35,6 +35,10 @@ class ConversationState(BaseModel):
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
     booking_status: Optional[str] = None
 
+    # New fields for enhanced features
+    source: Optional[str] = "app"  # Source of booking: 'app', 'website', 'whatsapp'
+    passenger_count: Optional[int] = None  # Number of passengers for smart vehicle selection
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for graph state"""
         return {
@@ -53,6 +57,8 @@ class ConversationState(BaseModel):
             "last_bot_response": self.last_bot_response,
             "tool_calls": self.tool_calls,
             "booking_status": self.booking_status,
+            "source": self.source,
+            "passenger_count": self.passenger_count,
         }
 
     @classmethod
@@ -73,3 +79,5 @@ class ConversationState(BaseModel):
         self.last_bot_response = None
         self.tool_calls = []
         self.booking_status = None
+        self.passenger_count = None
+        # Keep source as it doesn't change during reset
