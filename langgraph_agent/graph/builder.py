@@ -14,6 +14,8 @@ class GraphState(TypedDict, total=False):
     trip_id: Optional[str]
     pickup_location: Optional[str]
     drop_location: Optional[str]
+    pickup_location_object: Optional[Dict[str, Any]]
+    drop_location_object: Optional[Dict[str, Any]]
     trip_type: Optional[str]
     start_date: Optional[str]
     end_date: Optional[str]

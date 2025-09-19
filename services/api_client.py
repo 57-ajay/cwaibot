@@ -76,7 +76,9 @@ def create_trip_with_preferences(
     start_date: str,
     end_date: Optional[str] = None,
     preferences: Optional[Dict[str, Any]] = None,
-    source: str = "website"
+    source: str = "None",
+    pickup_location_object: Optional[Dict[str, Any]] = None,
+    drop_location_object: Optional[Dict[str, Any]] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Create a trip with user preferences and source tracking.
@@ -90,7 +92,7 @@ def create_trip_with_preferences(
         start_date: Start date in ISO format
         end_date: End date in ISO format (optional)
         preferences: User preferences for the trip
-        source: Source of booking ('app', 'website', or 'whatsapp')
+        source: Source of booking ('app', 'website', 'whatsapp', or  'None')
 
     Returns:
         Trip creation response or None if failed
@@ -100,26 +102,42 @@ def create_trip_with_preferences(
     logger.info(f"  Route: {pickup_city} to {drop_city}")
     logger.info(f"  Source: {source}")
     logger.info(f"  Preferences: {preferences}")
+    logger.info(f"  Has Pickup Object: {pickup_location_object is not None}")
+    logger.info(f"  Has Drop Object: {drop_location_object is not None}")
 
-    max_retries = 2  # Reduced retries for faster response
+
+    max_retries = 2
 
     for attempt in range(max_retries):
         try:
+            if pickup_location_object:
+                    pickup_location = pickup_location_object
+            else:
+                pickup_location = {
+                    "city": pickup_city,
+                    "coordinates": "",
+                    "placeName": "",
+                    "state": "",
+                    "address": ""
+                }
+
+            if drop_location_object:
+                drop_location = drop_location_object
+            else:
+                drop_location = {
+                    "city": drop_city,
+                    "coordinates": "",
+                    "placeName": "",
+                    "state": "",
+                    "address": ""
+                }
             payload = {
                 "customerId": customer_details.get("id"),
                 "customerName": customer_details.get("name"),
                 "customerPhone": customer_details.get("phone"),
                 "customerProfileImage": customer_details.get("profile_image", ""),
-                "pickUpLocation": {
-                    "city": pickup_city,
-                    "coordinates": "",
-                    "placeName": ""
-                },
-                "dropLocation": {
-                    "city": drop_city,
-                    "coordinates": "",
-                    "placeName": ""
-                },
+                "pickUpLocation": pickup_location,
+                "dropLocation": drop_location,
                 "startDate": start_date,
                 "tripType": trip_type,
                 "preferences": preferences or {},

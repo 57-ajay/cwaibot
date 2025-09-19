@@ -3,7 +3,7 @@
 
 import os
 import asyncio
-from typing import Optional, Dict
+from typing import Any, Optional, Dict
 from fastapi import FastAPI
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -76,10 +76,18 @@ class ChatRequest(BaseModel):
     customer_name: Optional[str] = None
     customer_profile: Optional[str] = None
     customer_phone: Optional[str] = None
-    source: Optional[str] = "website"
+    source: Optional[str] = "website",
+    pickupLocation: Optional[Dict[str, Any]] = None
+    dropLocation: Optional[Dict[str, Any]] = None
 
-async def get_user_state(user_id: str, customer_details: dict = None, source: str = "app") -> ConversationState:
-    """Get or create user conversation state with source tracking"""
+
+async def get_user_state(
+    user_id: str,
+    customer_details: dict = None,
+    source: str = "app",
+    location_objects: dict = None  # NEW parameter
+) -> ConversationState:
+    """Get or create user conversation state with source tracking and location objects"""
 
     # First, try to get from Redis
     state = await redis_manager.get_session(user_id)
@@ -109,6 +117,15 @@ async def get_user_state(user_id: str, customer_details: dict = None, source: st
                 state.source = source
                 updated = True
 
+            # Update location objects if provided (NEW)
+            if location_objects:
+                if location_objects.get("pickupLocation"):
+                    state.pickup_location_object = location_objects["pickupLocation"]
+                    updated = True
+                if location_objects.get("dropLocation"):
+                    state.drop_location_object = location_objects["dropLocation"]
+                    updated = True
+
             if updated:
                 await redis_manager.save_session(user_id, state)
 
@@ -117,12 +134,17 @@ async def get_user_state(user_id: str, customer_details: dict = None, source: st
     # No session in Redis, check fallback storage
     if user_id in fallback_storage:
         logger.info(f"📦 Using fallback storage for {user_id}")
-        # Update source if provided
+        # Update source and locations if provided
         if source:
             fallback_storage[user_id].source = source
+        if location_objects:
+            if location_objects.get("pickupLocation"):
+                fallback_storage[user_id].pickup_location_object = location_objects["pickupLocation"]
+            if location_objects.get("dropLocation"):
+                fallback_storage[user_id].drop_location_object = location_objects["dropLocation"]
         return fallback_storage[user_id]
 
-    # Create new session WITH customer details and source
+    # Create new session WITH customer details, source, and location objects
     logger.info(f"🆕 Creating new session for {user_id} from {source}")
     new_state = ConversationState(
         chat_history=[],
@@ -130,6 +152,8 @@ async def get_user_state(user_id: str, customer_details: dict = None, source: st
         trip_id=None,
         pickup_location=None,
         drop_location=None,
+        pickup_location_object=location_objects.get("pickupLocation") if location_objects else None,  # NEW
+        drop_location_object=location_objects.get("dropLocation") if location_objects else None,      # NEW
         trip_type=None,
         start_date=None,
         end_date=None,
@@ -140,8 +164,8 @@ async def get_user_state(user_id: str, customer_details: dict = None, source: st
         last_bot_response=None,
         tool_calls=[],
         booking_status=None,
-        source=source,  # Add source to state
-        passenger_count=None  # Add passenger count field
+        source=source,
+        passenger_count=None
     )
 
     # Save to Redis
@@ -175,25 +199,33 @@ async def clear_user_session(user_id: str) -> bool:
     return redis_deleted
 
 
-async def process_message_async(user_id: str, message: str, customer_details: dict = {}, source: str = "website") -> str:
+async def process_message_async(user_id: str, message: str, customer_details: dict = {}, source: str = "None", location_objects: dict = {}) -> str:
     """Process user message through enhanced cab agent"""
     logger.info(f"🔄 Processing for {user_id} from {source}: {message}")
 
     # Get user state from Redis/fallback with source
-    state_model = await get_user_state(user_id, customer_details, source)
+    state_model = await get_user_state(user_id, customer_details, source, location_objects)
 
     # Handle reset command
     if message.lower().strip() in ["reset", "start over", "restart"]:
         await clear_user_session(user_id)
         return "🔄 Let's start fresh! Please tell me your pickup city, destination, travel date, and whether it's a one-way or round trip."
 
-    # Handle cancel command
-    if message.lower().strip() in ["cancel", "cancel trip", "cancel booking"]:
-        if state_model.trip_id:
-            # Let the agent handle the cancellation through tools
-            pass
-        else:
-            return "I don't see any active trip to cancel. Would you like to book a new cab?"
+    # More strict cancel detection - only explicit cancellation words
+    cancel_keywords = ["cancel", "cancel trip", "cancel booking", "cancel my trip",
+                      "cancel the ride", "abort", "cancel my cab", "stop booking",
+                      "don't want the cab", "cancel the booking"]
+
+    message_lower = message.lower().strip()
+    is_cancel_request = any(keyword in message_lower for keyword in cancel_keywords)
+
+    # Only process as cancellation if explicit cancel request AND trip exists
+    if is_cancel_request and state_model.trip_id:
+        logger.info("📍 Explicit cancellation request detected with active trip")
+        # Let the agent handle the cancellation through tools
+        pass
+    elif is_cancel_request and not state_model.trip_id:
+        return "I don't see any active trip to cancel. Would you like to book a new cab?"
 
     # Add message to chat history
     state_model.chat_history.append(HumanMessage(content=message))
@@ -231,6 +263,10 @@ async def process_message_async(user_id: str, message: str, customer_details: di
             state_model.drop_location = result.get("drop_location")
         if result.get("trip_type") is not None:
             state_model.trip_type = result.get("trip_type")
+        if result.get("pickup_location_object") is not None:
+            state_model.pickup_location_object = result.get("pickup_location_object")
+        if result.get("drop_location_object") is not None:
+            state_model.drop_location_object = result.get("drop_location_object")
         if result.get("start_date") is not None:
             state_model.start_date = result.get("start_date")
         if result.get("end_date") is not None:
@@ -290,13 +326,25 @@ async def chat_with_bot(chat_request: ChatRequest):
         "customer_phone": chat_request.customer_phone,
     }
 
-    source = chat_request.source if chat_request.source else "website"
+    location_objects = {}
+    if chat_request.pickupLocation:
+        location_objects["pickupLocation"] = chat_request.pickupLocation
+    else:
+        location_objects["pickupLocation"] = None
+    if chat_request.dropLocation:
+        location_objects["dropLocation"] = chat_request.dropLocation
+    else:
+        location_objects["dropLocation"] = None
+
+
+    source = chat_request.source if chat_request.source else "None"
 
     response = await process_message_async(
         chat_request.user_id,
         chat_request.message,
         customer_details,
-        source
+        source,
+        location_objects
     )
 
     # Check if trip was created (simplified check)

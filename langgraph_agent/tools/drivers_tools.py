@@ -67,8 +67,10 @@ def create_trip_with_preferences(
     start_date: str,
     return_date: Optional[str] = None,
     preferences: Optional[Dict[str, Any]] = None,
-    source: Optional[str] = "app",
-    passenger_count: Optional[int] = None
+    source: Optional[str] = "None",
+    passenger_count: Optional[int] = None,
+    pickup_location_object: Optional[Dict[str, Any]] = None,
+    drop_location_object: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Creates a trip with user preferences and smart vehicle selection.
@@ -95,6 +97,8 @@ def create_trip_with_preferences(
     logger.info(f"Source: {source}")
     logger.info(f"Passenger Count: {passenger_count}")
     logger.info(f"Preferences: {preferences}")
+    logger.info(f"Pickup Location Object: {pickup_location_object}")
+    logger.info(f"Drop Location Object: {drop_location_object}")
     logger.info("="*50)
 
     # Format dates for API
@@ -142,7 +146,9 @@ def create_trip_with_preferences(
         formatted_start_date,
         formatted_end_date,
         processed_preferences,
-        source  # Pass source to the API
+        source,
+        pickup_location_object,
+        drop_location_object
     )
 
     if not trip_data or "tripId" not in trip_data:
@@ -159,7 +165,7 @@ def create_trip_with_preferences(
     # Return success message
     return {
         "status": "success",
-        "message": "Great! I've created your trip and you'll start receiving driver quotations shortly. Drivers will contact you directly with their prices.",
+        "message": "Great! I've created your trip and you'll start receiving driver quotations shortly.",
         "trip_id": trip_id
     }
 

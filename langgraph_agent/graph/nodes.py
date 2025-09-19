@@ -130,7 +130,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     tool_calls = state.get("tool_calls", [])
     if not tool_calls:
-        logger.warning("⚠️ No tool_calls in state.")
+        logger.warning("No tool_calls in state.")
         return state
 
     tool_map = {tool.name: tool for tool in tools}
@@ -142,8 +142,8 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         tool_args = tool_call.get("args", {})
         tool_id = tool_call.get("id")
 
-        logger.info(f"\n🔧 Executing tool: {tool_name}")
-        logger.info(f"📋 Tool Arguments: {json.dumps(tool_args, indent=2)}")
+        logger.info(f"\n Executing tool: {tool_name}")
+        logger.info(f" Tool Arguments: {json.dumps(tool_args, indent=2)}")
 
         tool_to_call = tool_map.get(tool_name)
         if not tool_to_call:
@@ -178,13 +178,17 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 }
 
                 # Add source
-                tool_args["source"] = state_updates.get("source", "app")
+                tool_args["source"] = state_updates.get("source", "None")
 
                 # The LLM should have extracted passenger_count if mentioned
                 # It's passed in tool_args directly by the LLM
 
-                logger.info("\n📞 CALLING TRIP CREATION TOOL...")
+                if state_updates.get("pickup_location_object"):
+                    tool_args["pickup_location_object"] = state_updates["pickup_location_object"]
+                if state_updates.get("drop_location_object"):
+                    tool_args["drop_location_object"] = state_updates["drop_location_object"]
 
+                logger.info("\n📞 CALLING TRIP CREATION TOOL...")
                 # Execute the tool
                 output = tool_to_call.invoke(tool_args)
                 logger.info(f"\n✅ Tool execution completed")

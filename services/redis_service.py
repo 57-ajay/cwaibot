@@ -171,6 +171,8 @@ class AsyncRedisSessionManager:
             "trip_id": state.trip_id,
             "pickup_location": state.pickup_location,
             "drop_location": state.drop_location,
+            "pickup_location_object": state.pickup_location_object,
+            "drop_location_object": state.drop_location_object,
             "trip_type": state.trip_type,
             "start_date": state.start_date,
             "end_date": state.end_date,
@@ -180,6 +182,8 @@ class AsyncRedisSessionManager:
             "customer_profile": state.customer_profile,
             "last_bot_response": state.last_bot_response,
             "tool_calls": state.tool_calls,
+            "source": state.source,
+            "passenger_count": state.passenger_count,
             "booking_status": state.booking_status,
             "last_activity": datetime.now().isoformat(),
         }
@@ -203,6 +207,8 @@ class AsyncRedisSessionManager:
             trip_id=state_dict.get("trip_id"),
             pickup_location=state_dict.get("pickup_location"),
             drop_location=state_dict.get("drop_location"),
+            pickup_location_object=state_dict.get("pickup_location_object"),
+            drop_location_object=state_dict.get("drop_location_object"),
             trip_type=state_dict.get("trip_type"),
             start_date=state_dict.get("start_date"),
             end_date=state_dict.get("end_date"),
@@ -213,6 +219,8 @@ class AsyncRedisSessionManager:
             last_bot_response=state_dict.get("last_bot_response"),
             tool_calls=state_dict.get("tool_calls", []),
             booking_status=state_dict.get("booking_status"),
+            source=state_dict.get("source", "None"),
+            passenger_count=state_dict.get("passenger_count"),
         )
 
         return state

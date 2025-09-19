@@ -24,6 +24,9 @@ class ConversationState(BaseModel):
     start_date: Optional[str] = None  # YYYY-MM-DD format
     end_date: Optional[str] = None    # YYYY-MM-DD format
 
+    pickup_location_object: Optional[Dict[str, Any]] = None
+    drop_location_object: Optional[Dict[str, Any]] = None
+
     # Customer details
     customer_id: Optional[str] = None
     customer_name: Optional[str] = None
@@ -47,6 +50,8 @@ class ConversationState(BaseModel):
             "trip_id": self.trip_id,
             "pickup_location": self.pickup_location,
             "drop_location": self.drop_location,
+            "pickup_location_object": self.pickup_location_object,
+            "drop_location_object": self.drop_location_object,
             "trip_type": self.trip_type,
             "start_date": self.start_date,
             "end_date": self.end_date,
@@ -73,6 +78,8 @@ class ConversationState(BaseModel):
         self.trip_id = None
         self.pickup_location = None
         self.drop_location = None
+        self.pickup_location_object = None
+        self.drop_location_object = None
         self.trip_type = None
         self.start_date = None
         self.end_date = None
