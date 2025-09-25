@@ -72,11 +72,11 @@ fallback_storage: Dict[str, ConversationState] = {}
 class ChatRequest(BaseModel):
     user_id: str
     message: str
-    customer_id: Optional[str] = None
-    customer_name: Optional[str] = None
-    customer_profile: Optional[str] = None
-    customer_phone: Optional[str] = None
-    source: Optional[str] = "website",
+    customer_id: Optional[str] = ""
+    customer_name: Optional[str] = ""
+    customer_profile: Optional[str] = ""
+    customer_phone: Optional[str] = ""
+    source: Optional[str] = "app"
     pickupLocation: Optional[Dict[str, Any]] = None
     dropLocation: Optional[Dict[str, Any]] = None
 
@@ -85,7 +85,7 @@ async def get_user_state(
     user_id: str,
     customer_details: dict = None,
     source: str = "app",
-    location_objects: dict = None  # NEW parameter
+    location_objects: dict = None
 ) -> ConversationState:
     """Get or create user conversation state with source tracking and location objects"""
 
@@ -199,7 +199,7 @@ async def clear_user_session(user_id: str) -> bool:
     return redis_deleted
 
 
-async def process_message_async(user_id: str, message: str, customer_details: dict = {}, source: str = "None", location_objects: dict = {}) -> str:
+async def process_message_async(user_id: str, message: str, customer_details: dict = {}, source: str = "app", location_objects: dict = {}) -> str:
     """Process user message through enhanced cab agent"""
     logger.info(f"🔄 Processing for {user_id} from {source}: {message}")
 
@@ -319,39 +319,42 @@ async def chat_with_bot(chat_request: ChatRequest):
     Handles a chat message from a user and returns the bot's response.
     Simplified to focus on trip creation.
     """
-    customer_details = {
-        "customer_id": chat_request.customer_id,
-        "customer_name": chat_request.customer_name,
-        "customer_profile": chat_request.customer_profile,
-        "customer_phone": chat_request.customer_phone,
-    }
 
-    location_objects = {}
-    if chat_request.pickupLocation:
-        location_objects["pickupLocation"] = chat_request.pickupLocation
-    else:
-        location_objects["pickupLocation"] = None
-    if chat_request.dropLocation:
-        location_objects["dropLocation"] = chat_request.dropLocation
-    else:
-        location_objects["dropLocation"] = None
+    try:
+
+        customer_details = {
+            "customer_id": chat_request.customer_id,
+            "customer_name": chat_request.customer_name,
+            "customer_profile": chat_request.customer_profile,
+            "customer_phone": chat_request.customer_phone,
+        }
+
+        location_objects = {}
+        if chat_request.pickupLocation:
+            location_objects["pickupLocation"] = chat_request.pickupLocation
+        else:
+            location_objects["pickupLocation"] = None
+        if chat_request.dropLocation:
+            location_objects["dropLocation"] = chat_request.dropLocation
+        else:
+            location_objects["dropLocation"] = None
 
 
-    source = chat_request.source if chat_request.source else "None"
+        source = chat_request.source if chat_request.source else "app"
 
-    response = await process_message_async(
-        chat_request.user_id,
-        chat_request.message,
-        customer_details,
-        source,
-        location_objects
-    )
+        response = await process_message_async(
+            chat_request.user_id,
+            chat_request.message,
+            customer_details,
+            source,
+            location_objects
+        )
 
     # Check if trip was created (simplified check)
-    trip_created = False
-    trip_cancelled = False
+        trip_created = False
+        trip_cancelled = False
 
-    success_messages = [
+        success_messages = [
             "i've created your trip",
             "trip created",
             "connecting with drivers",
@@ -361,28 +364,36 @@ async def chat_with_bot(chat_request: ChatRequest):
             "receiving driver"
         ]
 
-    cancel_messages = [
+        cancel_messages = [
             "cancelled successfully",
             "trip has been cancelled",
             "booking cancelled"
         ]
 
-    response_lower = response.lower()
-    for msg in success_messages:
-        if msg in response_lower:
-            trip_created = True
-            break
+        response_lower = response.lower()
+        for msg in success_messages:
+            if msg in response_lower:
+                trip_created = True
+                break
 
-    for msg in cancel_messages:
-        if msg in response_lower:
-            trip_cancelled = True
-            break
+        for msg in cancel_messages:
+            if msg in response_lower:
+                trip_cancelled = True
+                break
 
-    return {
+        return {
             "type": "text",
             "response": response,
             "trip_created": trip_created,
             "trip_cancelled": trip_cancelled,
+            "source": chat_request.source
+        }
+    except Exception as e:
+        return {
+            "type": "error",
+            "response": str(e),
+            "trip_created": False,
+            "trip_cancelled": False,
             "source": chat_request.source
         }
 
