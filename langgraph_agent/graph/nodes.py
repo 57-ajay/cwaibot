@@ -1,5 +1,5 @@
 # langgraph_agent/graph/nodes.py
-"""Simplified LLM-driven agent - trusting LLM's intelligence"""
+"""Clean and optimized LLM-driven agent nodes"""
 
 import json
 import logging
@@ -12,9 +12,9 @@ from langchain_google_vertexai import ChatVertexAI
 from langgraph_agent.graph.sys_prompt import bot_prompt
 from langgraph_agent.tools.drivers_tools import create_trip_with_preferences, cancel_trip
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Minimal logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)  # Only warnings and errors
 
 # Tools list
 tools = [create_trip_with_preferences, cancel_trip]
@@ -28,23 +28,13 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Simplified agent node - trusting LLM to extract everything intelligently.
     """
-    logger.info("\n" + "="*50)
-    logger.info("AGENT NODE EXECUTION")
-    logger.info("="*50)
-
-    # Log current state
-    logger.info("Current State:")
-    logger.info(f"  - Customer ID: {state.get('customer_id')}")
-    logger.info(f"  - Trip ID: {state.get('trip_id')}")
-    logger.info(f"  - Source: {state.get('source', 'app')}")
-
     # Get current date for context
     current_date_str = datetime.now().strftime("%Y-%m-%d")
 
     # Get chat history
     chat_history = state.get("chat_history", [])
 
-    # Build enhanced prompt with FAQ knowledge and current state
+    # Build enhanced prompt with current state
     enhanced_prompt = bot_prompt.replace("{current_date}", current_date_str) + f"""
 
 ## CURRENT STATE:
@@ -53,26 +43,21 @@ def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 - Customer: {state.get('customer_name', 'Unknown')} (ID: {state.get('customer_id', 'None')})
 
 ## INSTRUCTIONS:
-1. If user asks about CabsWale (pricing, safety, how it works, etc.) - answer from the FAQ knowledge
-2. If user wants to book - extract ALL details intelligently (cities, date, passengers, preferences)
+1. If user asks about CabsWale - answer from the FAQ knowledge
+2. If user wants to book - extract ALL details and preferences intelligently
 3. If user wants to cancel and trip exists - cancel it
-4. Trust your intelligence to extract passenger count from ANY language/format
-5. Auto-select vehicle based on passenger count (8+ → TempoTraveller, 5-7 → SUV)
-6. Never mention unsupported preferences to users
-
-Be natural and conversational. You're smart enough to understand context in any language!
+4. Extract preferences EXACTLY in the supported format
+5. Pass empty object {{}} for preferences if none mentioned
+6. Use exact success message: "**Great! We're reaching out to drivers for you.**\\n\\nYou'll start getting quotes in just a few minutes."
 """
 
     # Build messages for LLM
     messages = [SystemMessage(content=enhanced_prompt)]
-
     if chat_history:
         messages.extend(chat_history)
-        logger.info(f"  - Chat History Length: {len(chat_history)}")
 
     # Get LLM response
     try:
-        logger.info("\nInvoking LLM...")
         ai_response = llm_with_tools.invoke(messages)
 
         # Update chat history
@@ -81,9 +66,7 @@ Be natural and conversational. You're smart enough to understand context in any 
         # Check if the response has tool_calls
         if isinstance(ai_response, AIMessage):
             if not ai_response.tool_calls:
-                # Direct response (could be FAQ or asking for more info)
-                logger.info("✅ Agent provided direct response")
-
+                # Direct response (FAQ or asking for more info)
                 return {
                     **state,
                     "chat_history": updated_history,
@@ -92,11 +75,6 @@ Be natural and conversational. You're smart enough to understand context in any 
                 }
             else:
                 # Agent wants to call tools
-                logger.info(f"🔧 Agent requesting tool call")
-                for tool_call in ai_response.tool_calls:
-                    logger.info(f"  Tool: {tool_call.get('name')}")
-                    logger.info(f"  Args: {json.dumps(tool_call.get('args', {}), indent=2)}")
-
                 return {
                     **state,
                     "chat_history": updated_history,
@@ -111,9 +89,9 @@ Be natural and conversational. You're smart enough to understand context in any 
             }
 
     except Exception as e:
-        logger.error(f"❌ Error in agent_node: {e}", exc_info=True)
+        logger.error(f"Error in agent_node: {e}")
 
-        error_message = "I encountered an issue. You can call our support at +919403892230 for immediate assistance, or try again with your booking request."
+        error_message = "I encountered an issue. You can call our support at +919403892230 for immediate assistance."
 
         return {
             **state,
@@ -124,13 +102,9 @@ Be natural and conversational. You're smart enough to understand context in any 
 
 def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Execute tools for trip creation or cancellation"""
-    logger.info("\n" + "="*50)
-    logger.info("TOOL EXECUTOR NODE")
-    logger.info("="*50)
 
     tool_calls = state.get("tool_calls", [])
     if not tool_calls:
-        logger.warning("No tool_calls in state.")
         return state
 
     tool_map = {tool.name: tool for tool in tools}
@@ -142,13 +116,10 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         tool_args = tool_call.get("args", {})
         tool_id = tool_call.get("id")
 
-        logger.info(f"\n Executing tool: {tool_name}")
-        logger.info(f" Tool Arguments: {json.dumps(tool_args, indent=2)}")
-
         tool_to_call = tool_map.get(tool_name)
         if not tool_to_call:
             error_msg = f"Tool '{tool_name}' not found."
-            logger.error(f"❌ {error_msg}")
+            logger.error(error_msg)
             tool_messages.append(
                 ToolMessage(content=error_msg, tool_call_id=tool_id, name=tool_name)
             )
@@ -159,7 +130,6 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 # Handle trip cancellation
                 tool_args["customer_id"] = state_updates.get("customer_id") or ""
 
-                logger.info("\n📞 CALLING CANCELLATION TOOL...")
                 output = tool_to_call.invoke(tool_args)
 
                 if output.get("status") == "success":
@@ -180,25 +150,21 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 # Add source
                 tool_args["source"] = state_updates.get("source", "None")
 
-                # The LLM should have extracted passenger_count if mentioned
-                # It's passed in tool_args directly by the LLM
-
+                # Add location objects if available
                 if state_updates.get("pickup_location_object"):
                     tool_args["pickup_location_object"] = state_updates["pickup_location_object"]
                 if state_updates.get("drop_location_object"):
                     tool_args["drop_location_object"] = state_updates["drop_location_object"]
 
-                logger.info("\n📞 CALLING TRIP CREATION TOOL...")
                 # Execute the tool
                 output = tool_to_call.invoke(tool_args)
-                logger.info(f"\n✅ Tool execution completed")
 
                 # Update state based on tool output
                 if output.get("status") == "success":
                     state_updates["trip_id"] = output.get("trip_id")
                     state_updates["booking_status"] = "completed"
 
-                    # Store trip details from tool args
+                    # Store trip details
                     state_updates["pickup_location"] = tool_args.get("pickup_city")
                     state_updates["drop_location"] = tool_args.get("drop_city")
                     state_updates["trip_type"] = tool_args.get("trip_type")
@@ -206,7 +172,6 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     state_updates["end_date"] = tool_args.get("return_date") or tool_args.get("start_date")
                     state_updates["user_preferences"] = tool_args.get("preferences", {})
 
-                    # Store passenger count if it was provided
                     if tool_args.get("passenger_count"):
                         state_updates["passenger_count"] = tool_args.get("passenger_count")
 
@@ -216,7 +181,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "trip_id": output.get("trip_id")
                     })
 
-                    logger.info(f"✅ Trip {output.get('trip_id')} created successfully")
+                    logger.info(f"Trip {output.get('trip_id')} created successfully")
                 else:
                     output_str = json.dumps({
                         "status": "error",
@@ -228,7 +193,7 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
 
         except Exception as e:
-            logger.error(f"❌ Error executing tool {tool_name}: {e}", exc_info=True)
+            logger.error(f"Error executing tool {tool_name}: {e}")
 
             error_msg = json.dumps({
                 "status": "error",
@@ -242,9 +207,5 @@ def tool_executor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # Update the chat history
     state_updates["chat_history"] = state.get("chat_history", []) + tool_messages
     state_updates["tool_calls"] = []
-
-    logger.info("\n" + "="*50)
-    logger.info("TOOL EXECUTOR COMPLETED")
-    logger.info("="*50)
 
     return state_updates

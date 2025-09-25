@@ -1,15 +1,15 @@
 # langgraph_agent/tools/drivers_tools.py
-"""Enhanced driver tools with trip cancellation and smart features"""
+"""Clean and optimized driver tools with proper preference handling"""
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from langchain_core.tools import tool
 from datetime import datetime, timezone
 from services import api_client
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Minimal logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 
 @tool
@@ -27,31 +27,23 @@ def cancel_trip(
     Returns:
         Dictionary with cancellation status
     """
-    logger.info("="*50)
-    logger.info("CANCELLING TRIP")
-    logger.info(f"Trip ID: {trip_id}")
-    logger.info(f"Customer ID: {customer_id}")
-    logger.info("="*50)
-
     try:
-        # Call the cancellation API
         result = api_client.cancel_trip(trip_id)
 
         if result and result.get("status") == "success":
-            logger.info(f"✅ Trip {trip_id} cancelled successfully")
+            logger.info(f"Trip {trip_id} cancelled")
             return {
                 "status": "success",
                 "message": f"Your trip has been cancelled successfully. Trip ID: {trip_id}"
             }
         else:
-            logger.error(f"❌ Failed to cancel trip {trip_id}")
             return {
                 "status": "error",
                 "message": "Unable to cancel the trip. Please try again or contact support at +919403892230"
             }
 
     except Exception as e:
-        logger.error(f"❌ Error cancelling trip: {e}")
+        logger.error(f"Error cancelling trip: {e}")
         return {
             "status": "error",
             "message": "Technical issue occurred while cancelling. Please contact support at +919403892230"
@@ -82,25 +74,13 @@ def create_trip_with_preferences(
         customer_details: Dictionary containing customer's id, name, phone, and profile_image
         start_date: The start date for the trip, in YYYY-MM-DD format
         return_date: (Optional) The return date for a round-trip, in YYYY-MM-DD format
-        preferences: (Optional) User preferences for the trip (vehicle type, driver preferences, etc.)
+        preferences: (Optional) User preferences for the trip with exact format
         source: (Optional) Source of the booking - 'app', 'website', or 'whatsapp'
         passenger_count: (Optional) Number of passengers for smart vehicle selection
 
     Returns:
         Dictionary with trip creation status
     """
-    logger.info("="*50)
-    logger.info("CREATING TRIP WITH PREFERENCES")
-    logger.info(f"Route: {pickup_city} to {drop_city}")
-    logger.info(f"Trip Type: {trip_type}")
-    logger.info(f"Customer: {customer_details.get('name')} (ID: {customer_details.get('id')})")
-    logger.info(f"Source: {source}")
-    logger.info(f"Passenger Count: {passenger_count}")
-    logger.info(f"Preferences: {preferences}")
-    logger.info(f"Pickup Location Object: {pickup_location_object}")
-    logger.info(f"Drop Location Object: {drop_location_object}")
-    logger.info("="*50)
-
     # Format dates for API
     def format_date_for_api(date_str):
         """Convert YYYY-MM-DD to ISO format with current time"""
@@ -112,17 +92,14 @@ def create_trip_with_preferences(
                 current_time.hour, current_time.minute, current_time.second,
                 tzinfo=timezone.utc
             )
-            formatted = dt_with_time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-            return formatted
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error parsing date {date_str}: {e}")
+            return dt_with_time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+        except (ValueError, TypeError):
             return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
     formatted_start_date = format_date_for_api(start_date)
 
     if trip_type.lower() == "round-trip":
         if not return_date:
-            logger.error("Return date missing for round-trip")
             return {
                 "status": "error",
                 "message": "Return date is required for a round-trip."
@@ -132,12 +109,9 @@ def create_trip_with_preferences(
         formatted_end_date = formatted_start_date
 
     # Process preferences with smart vehicle selection
-    processed_preferences = process_preferences_with_smart_selection(
-        preferences,
-        passenger_count
-    )
+    processed_preferences = process_preferences(preferences, passenger_count)
 
-    # Call trip creation API with preferences and source
+    # Call trip creation API
     trip_data = api_client.create_trip_with_preferences(
         customer_details,
         pickup_city,
@@ -152,122 +126,143 @@ def create_trip_with_preferences(
     )
 
     if not trip_data or "tripId" not in trip_data:
-        logger.error("TRIP CREATION FAILED")
         return {
             "status": "error",
             "message": "Failed to create the trip. Please try again."
         }
 
     trip_id = trip_data.get("tripId")
-    logger.info(f"✅ TRIP CREATED SUCCESSFULLY: {trip_id}")
-    logger.info("="*50)
+    logger.info(f"Trip created: {trip_id}")
 
-    # Return success message
+    # Return with the exact success message
     return {
         "status": "success",
-        "message": "Great! I've created your trip and you'll start receiving driver quotations shortly.",
+        "message": "**Great! We're reaching out to drivers for you.**\n\nYou'll start getting quotes in just a few minutes.",
         "trip_id": trip_id
     }
 
 
-def process_preferences_with_smart_selection(
+def process_preferences(
     preferences: Optional[Dict[str, Any]],
     passenger_count: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Process user preferences with smart vehicle selection.
-    The LLM handles extraction - we just apply business logic.
-    Silently ignores unsupported preferences.
-    """
-    logger.info("Processing preferences...")
+    Process user preferences with exact format required by API.
 
-    # List of supported preference fields
-    SUPPORTED_PREFERENCES = {
-        'vehicles', 'vehicleType', 'language', 'isPetAllowed', 'gender',
-        'married', 'minDrivingExperience', 'minAge', 'maxAge', 'minConnections',
-        'allowHandicappedPersons', 'availableForCustomersPersonalCar',
-        'availableForDrivingInEventWedding', 'availableForPartTimeFullTime',
-        'verified', 'profileVerified'
+    Expected preference format:
+    {
+        "gender": "male" / "female",
+        "dlDateOfIssue": "asc" / "desc",
+        "languages": ["English", "Hindi"],
+        "vehicleTypesList": ["sedan", "suv"],
+        "isPetAllowed": true/false,
+        "allowHandicappedPersons": true/false,
+        "married": true/false,
+        "availableForCustomersPersonalCar": true/false,
+        "availableForDrivingInEventWedding": true/false,
+        "availableForPartTimeFullTime": true/false,
+        "connections": "asc" / "desc",
+        "age": 40  // maximum age
     }
+    """
+    if not preferences:
+        preferences = {}
 
     processed = {}
 
-    # Smart vehicle selection - LLM should have already done this, but double-check
+    # Smart vehicle selection based on passenger count
     if passenger_count:
         if passenger_count >= 8:
-            logger.info(f"Ensuring Tempo Traveller for {passenger_count} passengers")
-            processed['vehicles'] = 'TempoTraveller'
+            # Ensure Tempo Traveller for large groups
+            if "vehicleTypesList" in preferences:
+                if "tempotraveller" not in preferences["vehicleTypesList"]:
+                    preferences["vehicleTypesList"].append("tempotraveller")
+            else:
+                preferences["vehicleTypesList"] = ["tempotraveller"]
+
         elif passenger_count >= 5:
-            logger.info(f"Ensuring SUV for {passenger_count} passengers")
-            processed['vehicles'] = 'SUV'
-        # For less than 5, let user preference or no selection
+            # Ensure SUV for medium groups
+            if "vehicleTypesList" in preferences:
+                if "suv" not in preferences["vehicleTypesList"]:
+                    preferences["vehicleTypesList"].append("suv")
+            else:
+                preferences["vehicleTypesList"] = ["suv"]
 
-    if not preferences:
-        return processed
+    # Process each preference field with exact format
 
-    # Process only supported preferences, silently ignore others
-    for key, value in preferences.items():
-        # Check if this is a supported preference
-        if key not in SUPPORTED_PREFERENCES and key not in ['isPetFriendly']:
-            logger.debug(f"Ignoring unsupported preference: {key}")
-            continue
+    # Gender preference - string
+    if "gender" in preferences and preferences["gender"] in ["male", "female"]:
+        processed["gender"] = preferences["gender"]
 
-    # Vehicle type preferences - don't override smart selection
-    if not processed.get('vehicles'):
-        if 'vehicleType' in preferences or 'vehicles' in preferences:
-            vehicle_value = preferences.get('vehicleType') or preferences.get('vehicles')
-            if isinstance(vehicle_value, list):
-                processed['vehicles'] = ','.join(vehicle_value)
-            elif vehicle_value:
-                processed['vehicles'] = str(vehicle_value)
+    # License date of issue (experience) - string
+    if "dlDateOfIssue" in preferences and preferences["dlDateOfIssue"] in ["asc", "desc"]:
+        processed["dlDateOfIssue"] = preferences["dlDateOfIssue"]
 
-    # Language preference - direct string
-    if 'language' in preferences and preferences['language']:
-        processed['language'] = str(preferences['language'])
+    # Languages - array
+    if "languages" in preferences and isinstance(preferences["languages"], list):
+        processed["languages"] = preferences["languages"]
 
-    # Boolean preferences - API expects string "true" or "false"
-    boolean_params = {
-        'isPetAllowed': 'isPetAllowed',
-        'isPetFriendly': 'isPetAllowed',  # Handle alternate naming
-        'married': 'married',
-        'allowHandicappedPersons': 'allowHandicappedPersons',
-        'availableForCustomersPersonalCar': 'availableForCustomersPersonalCar',
-        'availableForDrivingInEventWedding': 'availableForDrivingInEventWedding',
-        'availableForPartTimeFullTime': 'availableForPartTimeFullTime',
-        'verified': 'verified',
-        'profileVerified': 'profileVerified'
-    }
+    # Vehicle types - array
+    if "vehicleTypesList" in preferences and isinstance(preferences["vehicleTypesList"], list):
+        # Normalize vehicle type names - include all vehicle types and models
+        normalized_vehicles = []
+        for vehicle in preferences["vehicleTypesList"]:
+            vehicle_lower = str(vehicle).lower().strip()
 
-    for pref_key, api_param in boolean_params.items():
-        if pref_key in preferences:
-            value = preferences[pref_key]
-            if isinstance(value, bool):
-                processed[api_param] = "true" if value else "false"
-            elif isinstance(value, str):
-                processed[api_param] = "true" if value.lower() in ['true', '1', 'yes'] else "false"
-            elif value:  # Any truthy value
-                processed[api_param] = "true"
+            # Handle specific vehicle models and types
+            # Map common variations to standard names
+            vehicle_mapping = {
+                "tempo traveller": "tempotraveller",
+                "tempo": "tempotraveller",
+                "innova crysta": "innova crysta",
+                "crysta": "innova crysta",
+                # Keep all other vehicles as-is (lowercased)
+            }
 
-    # Integer preferences - API expects integers
-    integer_params = {
-        'minDrivingExperience': 'minDrivingExperience',
-        'minAge': 'minAge',
-        'maxAge': 'maxAge',
-        'minConnections': 'minConnections'
-    }
+            # Check if vehicle needs mapping
+            if vehicle_lower in vehicle_mapping:
+                normalized_vehicles.append(vehicle_mapping[vehicle_lower])
+            else:
+                # Add the vehicle as-is (common types and specific models)
+                # This includes: sedan, suv, hatchback, innova, ertiga, dzire, etc.
+                normalized_vehicles.append(vehicle_lower)
 
-    for pref_key, api_param in integer_params.items():
-        if pref_key in preferences and preferences[pref_key] is not None:
-            try:
-                processed[api_param] = int(preferences[pref_key])
-            except (ValueError, TypeError):
-                logger.warning(f"Could not convert {pref_key} to integer: {preferences[pref_key]}")
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_vehicles = []
+        for vehicle in normalized_vehicles:
+            if vehicle not in seen:
+                seen.add(vehicle)
+                unique_vehicles.append(vehicle)
 
-    # Gender preference - lowercase string
-    if 'gender' in preferences and preferences['gender']:
-        gender_value = str(preferences['gender']).lower()
-        if gender_value in ['male', 'female']:
-            processed['gender'] = gender_value
+        if unique_vehicles:
+            processed["vehicleTypesList"] = unique_vehicles
 
-    logger.info(f"Processed preferences for API: {processed}")
+    # Boolean preferences - direct boolean values
+    boolean_fields = [
+        "isPetAllowed",
+        "allowHandicappedPersons",
+        "married",
+        "availableForCustomersPersonalCar",
+        "availableForDrivingInEventWedding",
+        "availableForPartTimeFullTime"
+    ]
+
+    for field in boolean_fields:
+        if field in preferences and isinstance(preferences[field], bool):
+            processed[field] = preferences[field]
+
+    # Connections preference - string
+    if "connections" in preferences and preferences["connections"] in ["asc", "desc"]:
+        processed["connections"] = preferences["connections"]
+
+    # Age preference - number (maximum age)
+    if "age" in preferences:
+        try:
+            age_value = int(preferences["age"])
+            if age_value > 0:
+                processed["age"] = age_value
+        except (ValueError, TypeError):
+            pass
+
     return processed

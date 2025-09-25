@@ -1,5 +1,5 @@
 # services/redis_service.py
-"""Simplified Redis service for session management"""
+"""Clean and optimized Redis service for session management"""
 
 import redis.asyncio as redis
 import pickle
@@ -12,7 +12,9 @@ from contextlib import asynccontextmanager
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage
 from models.state_model import ConversationState
 
+# Minimal logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 
 class RedisConfig:
@@ -63,9 +65,8 @@ class MessageSerializer:
             "content": message.content,
         }
 
-        if isinstance(message, AIMessage):
-            if hasattr(message, 'tool_calls'):
-                msg_dict["tool_calls"] = message.tool_calls
+        if isinstance(message, AIMessage) and hasattr(message, 'tool_calls'):
+            msg_dict["tool_calls"] = message.tool_calls
         elif isinstance(message, ToolMessage):
             if hasattr(message, 'tool_call_id'):
                 msg_dict["tool_call_id"] = message.tool_call_id
@@ -96,12 +97,11 @@ class MessageSerializer:
                 name=msg_dict.get("name", "")
             )
         else:
-            logger.warning(f"Unknown message type: {msg_type}")
             return HumanMessage(content=content)
 
 
 class AsyncRedisSessionManager:
-    """Simplified Redis session manager"""
+    """Optimized Redis session manager"""
 
     def __init__(self):
         self.config = RedisConfig()
@@ -124,12 +124,10 @@ class AsyncRedisSessionManager:
 
             # Test connection
             await self.redis_client.ping()
-            logger.info(f"✅ Redis connected at {self.config.redis_host}:{self.config.redis_port}")
             self._initialized = True
 
         except redis.ConnectionError as e:
-            logger.error(f"❌ Failed to connect to Redis: {e}")
-            logger.warning("⚠️ Using in-memory storage")
+            logger.error(f"Failed to connect to Redis: {e}")
             self.redis_client = None
             self._initialized = True
 
@@ -139,7 +137,6 @@ class AsyncRedisSessionManager:
             await self.redis_client.close()
             if self.pool:
                 await self.pool.disconnect()
-            logger.info("Redis connections closed")
 
     @asynccontextmanager
     async def get_redis(self):
@@ -201,7 +198,7 @@ class AsyncRedisSessionManager:
         ]
 
         # Create ConversationState
-        state = ConversationState(
+        return ConversationState(
             chat_history=chat_history,
             user_preferences=state_dict.get("user_preferences", {}),
             trip_id=state_dict.get("trip_id"),
@@ -223,8 +220,6 @@ class AsyncRedisSessionManager:
             passenger_count=state_dict.get("passenger_count"),
         )
 
-        return state
-
     async def get_session(self, user_id: str) -> Optional[ConversationState]:
         """Retrieve user session from Redis"""
         async with self.get_redis() as r:
@@ -237,14 +232,10 @@ class AsyncRedisSessionManager:
 
                 if data:
                     state = self._deserialize_state(data)
-                    logger.info(f"📥 Retrieved session for user {user_id}")
-
                     # Refresh TTL on access
                     await r.expire(key, self.config.session_ttl)
-
                     return state
                 else:
-                    logger.info(f"🆕 No existing session for user {user_id}")
                     return None
 
             except Exception as e:
@@ -263,8 +254,6 @@ class AsyncRedisSessionManager:
 
                 # Save with TTL
                 await r.setex(key, self.config.session_ttl, data)
-
-                logger.debug(f"💾 Saved session for user {user_id}")
                 return True
 
             except Exception as e:
@@ -279,12 +268,7 @@ class AsyncRedisSessionManager:
 
             try:
                 key = self._get_session_key(user_id)
-                deleted = await r.delete(key) > 0
-
-                if deleted:
-                    logger.info(f"🗑️ Deleted session for user {user_id}")
-
-                return deleted
+                return await r.delete(key) > 0
 
             except Exception as e:
                 logger.error(f"Error deleting session for {user_id}: {e}")
